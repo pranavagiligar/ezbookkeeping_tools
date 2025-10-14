@@ -1,4 +1,4 @@
-# API Client Usage Documentation
+# Ezbookkeeping Account Summary Tool Usage 
 
 This document describes how to build and run the Go script to retrieve account data from the API, separate it into assets and liabilities, format the balances using ISO 4217 standards, and export the results to CSV files.
 
