@@ -1,0 +1,108 @@
+name: Build and Release ezbookkeeping_tools
+
+on:
+  push:
+    tags:
+      - "v*.*.*"   # Runs only when you push a version tag like v1.0.0
+
+jobs:
+  build:
+    name: Build binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Verify Go version
+        run: go version
+
+      # Linux amd64
+      - name: Build for Linux amd64
+        run: |
+          set -e
+          mkdir -p build/amd64
+          GOOS=linux GOARCH=amd64 go build -o build/amd64/ezbookkeeping_tools .
+          tar -czf build/amd64/ezbookkeeping_tools-linux-amd64.tar.gz -C build/amd64 ezbookkeeping_tools
+
+      # Linux armv7
+      - name: Build for Linux armv7
+        run: |
+          set -e
+          mkdir -p build/armv7
+          GOOS=linux GOARCH=arm GOARM=7 go build -o build/armv7/ezbookkeeping_tools .
+          tar -czf build/armv7/ezbookkeeping_tools-linux-armv7.tar.gz -C build/armv7 ezbookkeeping_tools
+
+      # Linux arm64
+      - name: Build for Linux arm64
+        run: |
+          set -e
+          mkdir -p build/arm64
+          GOOS=linux GOARCH=arm64 go build -o build/arm64/ezbookkeeping_tools .
+          tar -czf build/arm64/ezbookkeeping_tools-linux-arm64.tar.gz -C build/arm64 ezbookkeeping_tools
+
+      # macOS amd64
+      - name: Build for macOS Intel (amd64)
+        run: |
+          set -e
+          mkdir -p build/darwin-amd64
+          GOOS=darwin GOARCH=amd64 go build -o build/darwin-amd64/ezbookkeeping_tools .
+          tar -czf build/darwin-amd64/ezbookkeeping_tools-darwin-amd64.tar.gz -C build/darwin-amd64 ezbookkeeping_tools
+
+      # macOS ARM64 (Apple M-series)
+      - name: Build for macOS ARM64 (Apple M-series)
+        run: |
+          set -e
+          mkdir -p build/darwin-arm64
+          GOOS=darwin GOARCH=arm64 go build -o build/darwin-arm64/ezbookkeeping_tools .
+          tar -czf build/darwin-arm64/ezbookkeeping_tools-darwin-arm64.tar.gz -C build/darwin-arm64 ezbookkeeping_tools
+
+      - name: List build artifacts
+        run: ls -R build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ezbookkeeping_tools-binaries
+          path: |
+            build/amd64/ezbookkeeping_tools-linux-amd64.tar.gz
+            build/armv7/ezbookkeeping_tools-linux-armv7.tar.gz
+            build/arm64/ezbookkeeping_tools-linux-arm64.tar.gz
+            build/darwin-amd64/ezbookkeeping_tools-darwin-amd64.tar.gz
+            build/darwin-arm64/ezbookkeeping_tools-darwin-arm64.tar.gz
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ezbookkeeping_tools-binaries
+          path: build
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            Automated release for ezbookkeeping_tools ${{ github.ref_name }}
+          files: |
+            build/amd64/ezbookkeeping_tools-linux-amd64.tar.gz
+            build/armv7/ezbookkeeping_tools-linux-armv7.tar.gz
+            build/arm64/ezbookkeeping_tools-linux-arm64.tar.gz
+            build/darwin-amd64/ezbookkeeping_tools-darwin-amd64.tar.gz
+            build/darwin-arm64/ezbookkeeping_tools-darwin-arm64.tar.gz
+          overwrite_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
