@@ -13,6 +13,7 @@ import (
 	"net/http/httputil"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/go-gomail/gomail"
 )
@@ -33,6 +34,46 @@ var (
 	smtpPassword   string
 	smtpSender     string
 )
+
+type AccountCategory int
+
+const (
+	Cash AccountCategory = iota + 1
+	CheckingAccount
+	CreditCard
+	VirtualAccount
+	DebtAccount
+	Receivables
+	InvestmentAccount
+	SavingsAccount
+	CertificateOfDeposit
+)
+
+// String returns the human-readable name for the AccountType.
+func (a AccountCategory) String() string {
+	switch a {
+	case Cash:
+		return "Cash"
+	case CheckingAccount:
+		return "Checking Account"
+	case CreditCard:
+		return "Credit Card"
+	case VirtualAccount:
+		return "Virtual Account"
+	case DebtAccount:
+		return "Debt Account"
+	case Receivables:
+		return "Receivables"
+	case InvestmentAccount:
+		return "Investment Account"
+	case SavingsAccount:
+		return "Savings Account"
+	case CertificateOfDeposit:
+		return "Certificate of Deposit"
+	default:
+		return "Unknown"
+	}
+}
 
 // --- ISO 4217 Currency Exponent Mapping ---
 // Most currencies use an exponent of 2 (e.g., 100 units = 1 major unit).
@@ -166,36 +207,74 @@ func sendReportEmail(htmlBody string) error {
 
 // generateHTMLReport creates a single HTML page with two tables.
 func generateHTMLReport(assets, liabilities []Account) string {
+	reportTime := time.Now().Format("2006-01-02 15:04:05 MST") // Get current time
+
+	assetTotals := calculateTotalBalances(assets)
+	liabilityTotals := calculateTotalBalances(liabilities)
+	var summary strings.Builder
+	summary.WriteString(fmt.Sprintf("<p>Report generated on: <strong>%s</strong></p>", reportTime)) // Add report time
+	summary.WriteString("<h2>Financial Summary</h2>")
+	for currency, total := range assetTotals {
+		liabilityTotal := liabilityTotals[currency]
+		// liabilityTotal are negative. So negate it
+		totalAsset := total - liabilityTotal
+		netAsset := totalAsset + liabilityTotal
+		summary.WriteString(fmt.Sprintf("<p><strong>Total Assets (%s):</strong> <span class=\"positive\">%.2f</span></p>", currency, totalAsset))
+		summary.WriteString(fmt.Sprintf("<p><strong>Total Liabilities (%s):</strong> <span class=\"negative\">%.2f</span></p>", currency, liabilityTotal))
+		summary.WriteString(fmt.Sprintf("<p><strong>Net Assets (%s):</strong> <span class=\"%s\">%.2f</span></p>", currency, getBalanceClass(netAsset), netAsset))
+	}
 	htmlTemplate := `
-<!DOCTYPE html>
-<html>
-<head>
-<style>
-body { font-family: Arial, sans-serif; }
-table { width: 80%%; border-collapse: collapse; margin-bottom: 20px; }
-th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-th { background-color: #f2f2f2; }
-.positive { color: green; font-weight: bold; }
-.negative { color: red; font-weight: bold; }
-</style>
-</head>
-<body>
-<h1>Financial Account Summary</h1>
-<p>This report contains a summary of your Assets and Liabilities. The detailed report is attached as a PDF.</p>
+			<!DOCTYPE html>
+			<html>
+			<head>
+			<style>
+			body { font-family: Arial, sans-serif; }
+			table { width: 80%%; border-collapse: collapse; margin-bottom: 20px; }
+			th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+			th { background-color: #f2f2f2; }
+			.positive { color: green; font-weight: bold; }
+			.negative { color: red; font-weight: bold; }
+			</style>
+			</head>
+			<body>
+			<h1>Financial Account Summary</h1>
+			<p>This report contains a summary of your Assets and Liabilities.</p>
+			%s
+			<h2>Assets</h2>
+			%s
 
-<h2>Assets</h2>
-%s
+			<h2>Liabilities</h2>
+			%s
 
-<h2>Liabilities</h2>
-%s
-
-</body>
-</html>
-`
+			</body>
+			</html>
+			`
 	assetTable := generateHTMLTable(assets)
 	liabilityTable := generateHTMLTable(liabilities)
 
-	return fmt.Sprintf(htmlTemplate, assetTable, liabilityTable)
+	return fmt.Sprintf(htmlTemplate, summary.String(), assetTable, liabilityTable)
+}
+
+// calculateTotalBalances sums the balances of accounts, grouped by currency, and returns them in major units.
+func calculateTotalBalances(accounts []Account) map[string]float64 {
+	totals := make(map[string]float64)
+	for _, acc := range accounts {
+		exp, ok := currencyExponents[strings.ToUpper(acc.Currency)]
+		if !ok {
+			exp = 2 // Default to 2 if currency exponent is unknown
+		}
+		divisor := math.Pow(10, float64(exp))
+		majorUnitBalance := acc.Balance / divisor
+		totals[acc.Currency] += majorUnitBalance
+	}
+	return totals
+}
+
+func getBalanceClass(balance float64) string {
+	if balance >= 0 {
+		return "positive"
+	}
+	return "negative"
 }
 
 // generateHTMLTable is a helper function to create the HTML table structure.
@@ -214,12 +293,12 @@ func generateHTMLTable(accounts []Account) string {
 			balanceClass = "negative"
 		}
 
-		table.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td class=\"%s\">%s</td><td>%d</td><td>%s</td></tr>",
+		table.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td class=\"%s\">%s</td><td>%s</td><td>%s</td></tr>",
 			acc.Name,
 			acc.Currency,
 			balanceClass,
 			formattedBalance,
-			acc.Category,
+			AccountCategory(acc.Category).String(),
 			acc.Comment,
 		))
 	}
@@ -258,7 +337,7 @@ func exportToCSV(filename string, accounts []Account) {
 			acc.Name,
 			acc.Currency,
 			formattedBalance,
-			fmt.Sprintf("%d", acc.Category),
+			AccountCategory(acc.Category).String(),
 			fmt.Sprintf("%t", acc.IsAsset),
 			fmt.Sprintf("%t", acc.IsLiability),
 			acc.Comment,
