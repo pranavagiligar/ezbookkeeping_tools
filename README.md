@@ -1,77 +1,145 @@
-# Ezbookkeeping Account Summary Tool Usage 
+# Ezbookkeeping Account Summary Tool Usage
 
-This document describes how to build and run the Go script to retrieve account data from the API, separate it into assets and liabilities, format the balances using ISO 4217 standards, export the results to CSV files, and optionally send these files via email.
+This tool fetches account data from the API, separates it into **assets** and **liabilities**, formats balances using **ISO 4217** standards, exports the results to CSV files, and optionally sends these files via email.
 
-# Prerequisites
-- Go environment: Ensure Go (version 1.16 or higher) is installed on your system.
-- SMTP Server Access: If using the email feature, you must have access to a valid SMTP server (e.g., Gmail, Outlook, dedicated server) and credentials.
+The tool can read configuration from **command-line flags** or from a **.env file** (default `.env` in the working directory).
 
-# Running the Script
-You can run the script directly using go run or first build a standalone executable binary.
+---
+
+## Prerequisites
+
+* **Go environment**: Ensure Go (version 1.16 or higher) is installed.
+* **SMTP Server Access**: If using email, you must have access to a valid SMTP server (Gmail, Outlook, or a dedicated server) and credentials.
+* **Optional .env file**: Stores API credentials, SMTP details
+
+Example `.env` file:
+
+```bash
+# API credentials
+BASE_URL=https://api.example.com
+LOGIN_NAME=admin
+PASSWORD="My#SecretPassword"
+
+# Email configuration
+EMAIL_TO="recipient@example.com"
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=myemail@gmail.com
+SMTP_PASS="my#app_password"
+SMTP_FROM=myemail@gmail.com
 ```
+
+> ⚠️ Note: If a value contains `#`, spaces, or `$`, **wrap it in quotes** (single `'` or double `"`).
+
+---
+
+## Running the Script
+
+You can either run it directly using `go run` or build a standalone binary:
+
+```bash
 go run main.go
 ```
 
-# Command-Line Flags
-The script requires three mandatory flags for authentication and two optional flags for controlling output.
-| Flag   | Type    | Description                                                                                               | Required | Example                        |
-|--------|---------|-----------------------------------------------------------------------------------------------------------|----------|--------------------------------|
-| -url   | string  | The base URL of the API (e.g., https://api.example.com).                                                  | Yes      | -url "https://api.example.com" |
-| -user  | string  | The login name used for API authorization.                                                                | Yes      | -user "john.doe"               |
-| -pass  | string  | The password used for API authorization.                                                                  | Yes      | -pass "S3cr3tP@ssw0rd"         |
-| -debug | boolean | Optional. Enable detailed HTTP request and response logging.                                              | No       | -debug                         |
-| -print | boolean | Optional. Print the resulting CSV data to the console in addition to exporting files.                     | No       | -print                         |
-| -smtp  | string  | Optional. The SMTP server hostname (e.g., https://www.google.com/url?sa=E&source=gmail&q=smtp.gmail.com). | No       | -smtp "smtp.office365.com"     |
-| -port  | int     | Optional. The SMTP server port (default is 587 for TLS).                                                  | No       | -port 465                      |
-| -to    | string  | Recipient email address(es) for the report. Use commas for multiple addresses.                            | Yes      | -to "report@corp.com"          |
-| -from  | string  | Optional. The sender email address. If omitted, uses -user flag value.                                    | No       | -from "tool.user@example.com"  |
+or
 
-# Note on Email Requirements
-If you provide the -smtp flag, the script will attempt to send the report. The user/pass credentials provided for the API (-user and -pass) are reused for SMTP authentication.
-
-# Examples
-1. Standard Run and Export (No Email)
-This command fetches, processes, and exports two files (assets.csv and liabilities.csv) to the current directory. The -to flag is still mandatory but its value is ignored if no SMTP server is specified.
-
+```bash
+go build -o ezbookkeeping_tools main.go
+./ezbookkeeping_tools
 ```
+
+By default, the tool attempts to load `.env` if command-line flags are missing. You can specify a custom config file:
+
+```bash
+./ezbookkeeping_tools -config /path/to/custom.env
+```
+
+---
+
+## Command-Line Flags
+
+| Flag       | Type    | Description                                                                         | Required | Example                                                      |
+| ---------- | ------- | ----------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------ |
+| -url       | string  | Base URL of the API (e.g., [https://api.example.com](https://api.example.com)).     | Yes*     | -url "[https://api.example.com](https://api.example.com)"    |
+| -user      | string  | Login name for API authorization.                                                   | Yes*     | -user "john.doe"                                             |
+| -pass      | string  | Password for API authorization.                                                     | Yes*     | -pass "S3cr3tP@ssw0rd"                                       |
+| -debug     | boolean | Optional. Enable detailed HTTP request/response logging.                            | No       | -debug                                                       |
+| -print     | boolean | Optional. Print CSV data to console in addition to exporting files.                 | No       | -print                                                       |
+| -smtp-host | string  | Optional. SMTP server hostname.                                                     | No       | -smtp-host "smtp.gmail.com"                                  |
+| -smtp-port | int     | Optional. SMTP server port (default 587 for TLS).                                   | No       | -smtp-port 587                                               |
+| -smtp-user | string  | Optional. SMTP username.                                                            | No       | -smtp-user "[myemail@gmail.com](mailto:myemail@gmail.com)"   |
+| -smtp-pass | string  | Optional. SMTP password.                                                            | No       | -smtp-pass "my#app_password"                                 |
+| -email-to  | string  | Recipient email address(es) for the report. Comma-separated for multiple addresses. | No       | -email-to "[report@corp.com](mailto:report@corp.com)"        |
+| -smtp-from | string  | Optional. Email sender address. Defaults to SMTP username if omitted.               | No       | -smtp-from "[sender@example.com](mailto:sender@example.com)" |
+| -config    | string  | Optional. Path to a configuration file (default `.env`).                            | No       | -config "./myconfig.env"                                     |
+
+> *Required if not provided via `.env`.
+
+---
+
+## Notes on Email
+
+* If `-smtp-host` is provided, the tool attempts to send the report via email.
+
+---
+
+## Examples
+
+### 1. Standard Run and Export (No Email)
+
+Exports CSV files only:
+
+```bash
 go run main.go \
     -url "https://api.example.com" \
     -user "myuser" \
-    -pass "mypassword" \
-    -to "placeholder@example.com"
+    -pass "mypassword"
 ```
 
-2. Run, Export, and Email Report
-This command fetches the data, saves the CSV files, and sends both files as attachments to report@corp.com using Gmail's SMTP server.
+> The tool will also attempt to load missing values from `.env`.
 
-```
+### 2. Run, Export, and Email
+
+Fetches the data, saves CSVs, and sends the report via SMTP:
+
+```bash
 go run main.go \
     -url "https://api.example.com" \
     -user "myemail@gmail.com" \
     -pass "my_app_password" \
-    -to "recipient@corp.com,boss@corp.com" \
-    -smtp "smtp.gmail.com" \
-    -port 587
+    -email-to "recipient@corp.com,boss@corp.com" \
+    -smtp-host "smtp.gmail.com" \
+    -smtp-port 587
 ```
 
-3. Email from a Different Sender
-This command uses sender@tool.com as the email sender, authenticating with myuser and mypassword.
+### 3. Email from a Different Sender
 
-```
+```bash
 go run main.go \
     -url "https://api.example.com" \
     -user "myuser" \
     -pass "mypassword" \
-    -to "recipient@corp.com" \
-    -smtp "smtp.mydomain.com" \
-    -from "sender@tool.com"
+    -email-to "recipient@corp.com" \
+    -smtp-host "smtp.mydomain.com" \
+    -smtp-from "sender@tool.com"
 ```
 
-# Output Files
-Upon successful execution, two CSV files will be created in the directory where the script is run:
-* assets.csv
-* liabilities.csv
+### 4. With .env located on same as binary or main.go
 
-The Balance field in these files is correctly converted from the API's minor units (e.g., cents) to the major unit (e.g., dollars) based on the *ISO 4217* Currency Code.
 
-**CSV Header:** ID, Name, Currency, Balance, Category, IsAsset, IsLiability, Comment
+```bash
+go run main.go
+```
+
+---
+
+## Output Files
+
+Upon successful execution, two CSV files are created in the current directory:
+
+* `assets.csv`
+* `liabilities.csv`
+
+The **Balance** field is converted from API minor units to major units based on *ISO 4217* currency codes.
+
+**CSV Header:** `ID, Name, Currency, Balance, Category, IsAsset, IsLiability, Comment`

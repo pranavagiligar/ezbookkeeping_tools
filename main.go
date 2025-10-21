@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-gomail/gomail"
+	"github.com/joho/godotenv"
 )
 
 // --- Global Configuration Variables ---
@@ -33,6 +34,9 @@ var (
 	smtpUsername   string
 	smtpPassword   string
 	smtpSender     string
+
+	// Config file
+	configFile string
 )
 
 type AccountCategory int
@@ -120,7 +124,7 @@ func init() {
 	flag.StringVar(&loginName, "user", "", "The login name for API authorization")
 	flag.StringVar(&password, "pass", "", "The password for API authorization")
 	flag.BoolVar(&debugMode, "debug", false, "Enable detailed HTTP request/response logging")
-	flag.BoolVar(&printMode, "print", false, "NEW: Print the CSV data to the console")
+	flag.BoolVar(&printMode, "print", false, "Print CSV data to the console")
 
 	// Email Flags
 	flag.StringVar(&emailRecipient, "email-to", "", "Recipient email address for the report.")
@@ -129,15 +133,61 @@ func init() {
 	flag.StringVar(&smtpUsername, "smtp-user", "", "SMTP username.")
 	flag.StringVar(&smtpPassword, "smtp-pass", "", "SMTP password.")
 	flag.StringVar(&smtpSender, "smtp-from", "", "Sender email address (must match SMTP user for some servers).")
+
+	// Config file (optional)
+	flag.StringVar(&configFile, "config", ".env", "Path to configuration file (default .env)")
 }
 
 func main() {
 	flag.Parse()
 
+	// Load from config file (.env) if command-line args are missing
+	if baseURL == "" || loginName == "" || password == "" {
+		if _, err := os.Stat(configFile); err == nil {
+			fmt.Printf("📄 Loading configuration from %s\n", configFile)
+			err := godotenv.Load(configFile)
+			if err != nil {
+				log.Fatalf("❌ Failed to load config file %s: %v", configFile, err)
+			}
+
+			// Load values from env if not set by flags
+			if baseURL == "" {
+				baseURL = os.Getenv("BASE_URL")
+			}
+			if loginName == "" {
+				loginName = os.Getenv("LOGIN_NAME")
+			}
+			if password == "" {
+				password = os.Getenv("PASSWORD")
+			}
+			if emailRecipient == "" {
+				emailRecipient = os.Getenv("EMAIL_TO")
+			}
+			if smtpHost == "" {
+				smtpHost = os.Getenv("SMTP_HOST")
+			}
+			if smtpPort == 0 {
+				smtpPort = envToInt("SMTP_PORT", 587)
+			}
+			if smtpUsername == "" {
+				smtpUsername = os.Getenv("SMTP_USER")
+			}
+			if smtpPassword == "" {
+				smtpPassword = os.Getenv("SMTP_PASS")
+			}
+			if smtpSender == "" {
+				smtpSender = os.Getenv("SMTP_FROM")
+			}
+		} else {
+			log.Println("⚠️ No .env file found, using only command-line arguments")
+		}
+	}
+
+	// Validate essential config
 	if baseURL == "" || loginName == "" || password == "" {
 		fmt.Println("Usage: go run main.go -url <base_url> -user <username> -pass <password> [email flags...]")
 		flag.PrintDefaults()
-		log.Fatal("🚨 Missing required API flags: -url, -user, and -pass.")
+		log.Fatal("🚨 Missing required API flags or .env values: -url, -user, -pass")
 	}
 
 	fmt.Printf("Attempting login to %s as user: %s\n", baseURL, loginName)
@@ -185,6 +235,19 @@ func main() {
 }
 
 // --- Utility Functions ---
+
+func envToInt(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	var num int
+	_, err := fmt.Sscanf(val, "%d", &num)
+	if err != nil {
+		return defaultVal
+	}
+	return num
+}
 
 // --- Reporting and Email Functions ---
 // sendReportEmail configures and sends the email using gomail.
