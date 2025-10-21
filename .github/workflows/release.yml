@@ -62,6 +62,17 @@ jobs:
           GOOS=darwin GOARCH=arm64 go build -o build/darwin-arm64/ezbookkeeping_tools .
           tar -czf build/darwin-arm64/ezbookkeeping_tools-darwin-arm64.tar.gz -C build/darwin-arm64 ezbookkeeping_tools
 
+      # Android ARM64 (Nothing Phone 1)
+      - name: Build for Android ARM64
+        run: |
+          set -e
+          mkdir -p build/android-arm64
+          export GOOS=android
+          export GOARCH=arm64
+          export CGO_ENABLED=0
+          go build -o build/android-arm64/ezbookkeeping_tools .
+          tar -czf build/android-arm64/ezbookkeeping_tools-android-arm64.tar.gz -C build/android-arm64 ezbookkeeping_tools
+
       - name: List build artifacts
         run: ls -R build
 
@@ -75,6 +86,7 @@ jobs:
             build/arm64/ezbookkeeping_tools-linux-arm64.tar.gz
             build/darwin-amd64/ezbookkeeping_tools-darwin-amd64.tar.gz
             build/darwin-arm64/ezbookkeeping_tools-darwin-arm64.tar.gz
+            build/android-arm64/ezbookkeeping_tools-android-arm64.tar.gz
 
   release:
     name: Publish GitHub Release
@@ -103,6 +115,7 @@ jobs:
             build/arm64/ezbookkeeping_tools-linux-arm64.tar.gz
             build/darwin-amd64/ezbookkeeping_tools-darwin-amd64.tar.gz
             build/darwin-arm64/ezbookkeeping_tools-darwin-arm64.tar.gz
+            build/android-arm64/ezbookkeeping_tools-android-arm64.tar.gz
           overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
