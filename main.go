@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/go-gomail/gomail"
+	"github.com/go-pdf/fpdf"
 	"github.com/joho/godotenv"
 )
 
@@ -26,9 +27,11 @@ var (
 	password  string
 	debugMode bool
 	printMode bool
+	dryRun    bool
 
 	// Email Configuration
 	emailRecipient string
+	emailMessage   string
 	smtpHost       string
 	smtpPort       int
 	smtpUsername   string
@@ -37,6 +40,9 @@ var (
 
 	// Config file
 	configFile string
+
+	// PDF Config
+	pdfPassword string
 )
 
 type AccountCategory int
@@ -126,9 +132,11 @@ func init() {
 	flag.StringVar(&password, "pass", "", "The password for API authorization")
 	flag.BoolVar(&debugMode, "debug", false, "Enable detailed HTTP request/response logging")
 	flag.BoolVar(&printMode, "print", false, "Print CSV data to the console")
+	flag.BoolVar(&dryRun, "dry-run", false, "Generate report but skip sending email")
 
 	// Email Flags
 	flag.StringVar(&emailRecipient, "email-to", "", "Recipient email address for the report.")
+	flag.StringVar(&emailMessage, "email-message", "", "Custom HTML message for the email body.")
 	flag.StringVar(&smtpHost, "smtp-host", "", "SMTP server host.")
 	flag.IntVar(&smtpPort, "smtp-port", 587, "SMTP server port (default 587).")
 	flag.StringVar(&smtpUsername, "smtp-user", "", "SMTP username.")
@@ -137,6 +145,9 @@ func init() {
 
 	// Config file (optional)
 	flag.StringVar(&configFile, "config", ".env", "Path to configuration file (default .env)")
+
+	// PDF Flags
+	flag.StringVar(&pdfPassword, "pdf-password", "", "Password to encrypt the PDF report.")
 }
 
 func main() {
@@ -164,6 +175,9 @@ func main() {
 			if emailRecipient == "" {
 				emailRecipient = os.Getenv("EMAIL_TO")
 			}
+			if emailMessage == "" {
+				emailMessage = os.Getenv("EMAIL_MESSAGE")
+			}
 			if smtpHost == "" {
 				smtpHost = os.Getenv("SMTP_HOST")
 			}
@@ -178,6 +192,9 @@ func main() {
 			}
 			if smtpSender == "" {
 				smtpSender = os.Getenv("SMTP_FROM")
+			}
+			if pdfPassword == "" {
+				pdfPassword = os.Getenv("PDF_PASSWORD")
 			}
 		} else {
 			log.Println("⚠️ No .env file found, using only command-line arguments")
@@ -220,19 +237,28 @@ func main() {
 		}
 	}
 
-	// 4. Generate Reports
+	// 4. Generate Reports (CSV)
 	exportToCSV("assets.csv", assets)
 	exportToCSV("liabilities.csv", liabilities)
 
-	htmlContent := generateHTMLReport(assets, liabilities)
+	// 5. Generate PDF Report
+	pdfFilename, err := generatePDFReport(assets, liabilities)
+	if err != nil {
+		log.Fatalf("🚨 Failed to generate PDF report: %v", err)
+	}
+	fmt.Printf("📄 Successfully generated PDF report: %s\n", pdfFilename)
 
-	// 5. Send Email (if required flags are present)
+	// 6. Send Email (if required flags are present)
 	if emailRecipient != "" && smtpHost != "" && smtpUsername != "" {
-		err = sendReportEmail(htmlContent)
-		if err != nil {
-			log.Fatalf("🚨 Failed to send email: %v", err)
+		if dryRun {
+			fmt.Println("🏃 Dry Run: Email sending skipped.")
+		} else {
+			err = sendReportEmail(pdfFilename)
+			if err != nil {
+				log.Fatalf("🚨 Failed to send email: %v", err)
+			}
+			fmt.Printf("✅ Email report successfully sent to %s\n", emailRecipient)
 		}
-		fmt.Printf("✅ Email report successfully sent to %s\n", emailRecipient)
 	} else if emailRecipient != "" {
 		log.Println("⚠️ Email flags missing. Not sending email. Use -smtp-host, -smtp-user, and -email-to.")
 	}
@@ -254,8 +280,8 @@ func envToInt(key string, defaultVal int) int {
 }
 
 // --- Reporting and Email Functions ---
-// sendReportEmail configures and sends the email using gomail.
-func sendReportEmail(htmlBody string) error {
+// sendReportEmail configures and sends the email using gomail with the PDF attachment.
+func sendReportEmail(attachmentPath string) error {
 	sender := smtpSender
 	if sender == "" {
 		sender = smtpUsername // Default to using username as sender if not specified
@@ -271,114 +297,258 @@ func sendReportEmail(htmlBody string) error {
 	}
 	m.SetHeader("To", recipients...)
 
-	m.SetHeader("Subject", "Financial Account Balance Report")
-	m.SetBody("text/html", htmlBody)
+	m.SetHeader("Subject", "Financial Account Balance Report (PDF)")
+
+	body := emailMessage
+	if body == "" {
+		body = "Please find the attached Financial Account Balance Report."
+	}
+	m.SetBody("text/html", body)
+	m.Attach(attachmentPath)
 
 	d := gomail.NewDialer(smtpHost, smtpPort, smtpUsername, smtpPassword)
 
 	return d.DialAndSend(m)
 }
 
-// generateHTMLReport creates a single HTML page with two tables.
-func generateHTMLReport(assets, liabilities []Account) string {
-	reportTime := time.Now().Format("2006-01-02 15:04:05 MST") // Get current time
+// generatePDFReport creates a password-protected PDF report.
+func generatePDFReport(assets, liabilities []Account) (string, error) {
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.SetFont("Arial", "", 12)
 
-	assetTotals := calculateTotalBalances(assets)
-	liabilityTotals := calculateTotalBalances(liabilities)
-	var summary strings.Builder
-	summary.WriteString(fmt.Sprintf("<p>Report generated on: <strong>%s</strong></p>", reportTime)) // Add report time
-	summary.WriteString("<h2>Financial Summary</h2>")
-	for currency, total := range assetTotals {
-		liabilityTotal := liabilityTotals[currency]
-		// liabilityTotal are negative. So negate it
-		totalAsset := total - liabilityTotal
-		netAsset := totalAsset + liabilityTotal
-		summary.WriteString(fmt.Sprintf("<p><strong>Total Assets (%s):</strong> <span class=\"positive\">%.2f</span></p>", currency, totalAsset))
-		summary.WriteString(fmt.Sprintf("<p><strong>Total Liabilities (%s):</strong> <span class=\"negative\">%.2f</span></p>", currency, liabilityTotal))
-		summary.WriteString(fmt.Sprintf("<p><strong>Net Assets (%s):</strong> <span class=\"%s\">%.2f</span></p>", currency, getBalanceClass(netAsset), netAsset))
+	// Enable protection if password is provided
+	if pdfPassword != "" {
+		pdf.SetProtection(fpdf.CnProtectPrint, pdfPassword, "")
 	}
-	htmlTemplate := `
-			<!DOCTYPE html>
-			<html>
-			<head>
-			<style>
-			body { font-family: Arial, sans-serif; }
-			table { width: 80%%; border-collapse: collapse; margin-bottom: 20px; }
-			th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-			th { background-color: #f2f2f2; }
-			.positive { color: green; font-weight: bold; }
-			.negative { color: red; font-weight: bold; }
-			</style>
-			</head>
-			<body>
-			<h1>Financial Account Summary</h1>
-			<p>This report contains a summary of your Assets and Liabilities.</p>
-			%s
-			<h2>Assets</h2>
-			%s
 
-			<h2>Liabilities</h2>
-			%s
+	pdf.AddPage()
 
-			</body>
-			</html>
-			`
-	assetTable := generateHTMLTable(assets)
-	liabilityTable := generateHTMLTable(liabilities)
+	// Title
+	pdf.SetFont("Arial", "B", 16)
+	pdf.Cell(40, 10, "Financial Account Summary")
+	pdf.Ln(12)
 
-	return fmt.Sprintf(htmlTemplate, summary.String(), assetTable, liabilityTable)
+	// Report Date
+	pdf.SetFont("Arial", "", 10)
+	pdf.Cell(0, 10, fmt.Sprintf("Report generated on: %s", time.Now().Format("2006-01-02 15:04:05 MST")))
+	pdf.Ln(12)
+
+	// Summary Section
+	// We combine assets and liabilities to calculate total net worth per currency
+	allAccounts := append(append([]Account{}, assets...), liabilities...)
+	totals := calculateTotalBalances(allAccounts)
+
+	pdf.SetFont("Arial", "B", 14)
+	pdf.SetTextColor(0, 0, 0)
+	pdf.SetFillColor(230, 230, 230)
+	pdf.CellFormat(0, 10, "  Summary", "0", 1, "L", true, 0, "")
+	pdf.Ln(5)
+
+	pdf.SetFont("Arial", "", 12)
+	for currency, summary := range totals {
+		// Asset Line
+		pdf.SetFont("Arial", "B", 12)
+		pdf.Cell(40, 8, "Total Assets:")
+		pdf.SetFont("Arial", "", 12)
+		pdf.SetTextColor(39, 174, 96) // Green
+		pdf.Cell(0, 8, fmt.Sprintf("%s %.2f", currency, summary.TotalAsset))
+		pdf.Ln(6)
+
+		// Liability Line
+		pdf.SetTextColor(0, 0, 0)
+		pdf.SetFont("Arial", "B", 12)
+		pdf.Cell(40, 8, "Total Liabilities:")
+		pdf.SetFont("Arial", "", 12)
+		pdf.SetTextColor(192, 57, 43) // Red
+		pdf.Cell(0, 8, fmt.Sprintf("%s %.2f", currency, summary.TotalLiability))
+		pdf.Ln(6)
+
+		// Net Worth Line
+		net := summary.TotalAsset + summary.TotalLiability
+		pdf.SetTextColor(0, 0, 0)
+		pdf.SetFont("Arial", "B", 12)
+		pdf.Cell(40, 8, "Net Worth:")
+		pdf.SetFont("Arial", "B", 12)
+		if net >= 0 {
+			pdf.SetTextColor(39, 174, 96) // Green
+		} else {
+			pdf.SetTextColor(192, 57, 43) // Red
+		}
+		pdf.Cell(0, 8, fmt.Sprintf("%s %.2f", currency, net))
+		pdf.Ln(12)
+	}
+
+	pdf.SetTextColor(0, 0, 0) // Reset text color
+
+	// Assets Table
+	pdf.SetFont("Arial", "B", 14)
+	pdf.Cell(0, 10, "Assets")
+	pdf.Ln(10)
+	drawPDFTable(pdf, assets)
+	pdf.Ln(10)
+
+	// Liabilities Table
+	pdf.SetFont("Arial", "B", 14)
+	pdf.Cell(0, 10, "Liabilities")
+	pdf.Ln(10)
+	drawPDFTable(pdf, liabilities)
+
+	// Save to file
+	filename := fmt.Sprintf("Financial_Report_%s.pdf", time.Now().Format("2006-01-02"))
+	err := pdf.OutputFileAndClose(filename)
+	return filename, err
 }
 
-// calculateTotalBalances sums the balances of accounts, grouped by currency, and returns them in major units.
-func calculateTotalBalances(accounts []Account) map[string]float64 {
-	totals := make(map[string]float64)
+func drawPDFTable(pdf *fpdf.Fpdf, accounts []Account) {
+	// Header
+	pdf.SetFont("Arial", "B", 10)
+	pdf.SetFillColor(41, 128, 185)  // Blue Header
+	pdf.SetTextColor(255, 255, 255) // White Text
+
+	// Widths: Name(60), Curr(20), Bal(30), Cat(35), Com(45) = 190
+	pdf.CellFormat(60, 10, "Name", "1", 0, "", true, 0, "")
+	pdf.CellFormat(20, 10, "Cur", "1", 0, "", true, 0, "")
+	pdf.CellFormat(30, 10, "Balance", "1", 0, "R", true, 0, "")
+	pdf.CellFormat(35, 10, "Category", "1", 0, "", true, 0, "")
+	pdf.CellFormat(45, 10, "Comment", "1", 0, "", true, 0, "")
+	pdf.Ln(-1)
+
+	pdf.SetFont("Arial", "", 10)
+	pdf.SetTextColor(0, 0, 0) // Reset text color
+
+	for i, acc := range accounts {
+		// Zebra Striping
+		if i%2 == 0 {
+			pdf.SetFillColor(245, 245, 245) // Very Light Gray
+		} else {
+			pdf.SetFillColor(255, 255, 255) // White
+		}
+
+		// Calculate row height based on wrapping text
+		lineHt := 6.0
+
+		nameLines := pdf.SplitLines([]byte(acc.Name), 60)
+		commentLines := pdf.SplitLines([]byte(acc.Comment), 45)
+
+		nLines := len(nameLines)
+		if len(commentLines) > nLines {
+			nLines = len(commentLines)
+		}
+		if nLines < 1 {
+			nLines = 1
+		}
+
+		rowHeight := float64(nLines) * lineHt
+
+		// Page break check
+		_, pageHeight := pdf.GetPageSize()
+		_, _, _, botMargin := pdf.GetMargins()
+		if pdf.GetY()+rowHeight > pageHeight-botMargin {
+			pdf.AddPage()
+			// Re-print header
+			pdf.SetFont("Arial", "B", 10)
+			pdf.SetFillColor(41, 128, 185)  // Blue Header
+			pdf.SetTextColor(255, 255, 255) // White Text
+
+			pdf.CellFormat(60, 10, "Name", "1", 0, "", true, 0, "")
+			pdf.CellFormat(20, 10, "Cur", "1", 0, "", true, 0, "")
+			pdf.CellFormat(30, 10, "Balance", "1", 0, "R", true, 0, "")
+			pdf.CellFormat(35, 10, "Category", "1", 0, "", true, 0, "")
+			pdf.CellFormat(45, 10, "Comment", "1", 0, "", true, 0, "")
+			pdf.Ln(-1)
+
+			pdf.SetFont("Arial", "", 10)
+			pdf.SetTextColor(0, 0, 0)
+
+			// Reset fill for the new page row
+			if i%2 == 0 {
+				pdf.SetFillColor(245, 245, 245)
+			} else {
+				pdf.SetFillColor(255, 255, 255)
+			}
+		}
+
+		x := pdf.GetX()
+		y := pdf.GetY()
+
+		// Determine Fill
+		fill := true // Always fill to show zebra striping
+
+		// Name (MultiCell)
+		pdf.SetXY(x, y)
+		pdf.MultiCell(60, lineHt, acc.Name, "1", "L", fill)
+
+		// Currency
+		pdf.SetXY(x+60, y)
+		pdf.CellFormat(20, rowHeight, acc.Currency, "1", 0, "C", fill, 0, "")
+
+		// Balance (with color logic)
+		formattedBalance := convertBalance(acc.Balance, acc.Currency)
+
+		if acc.Balance >= 0 {
+			pdf.SetTextColor(39, 174, 96) // Green
+		} else {
+			pdf.SetTextColor(192, 57, 43) // Red
+		}
+
+		pdf.SetXY(x+80, y)
+		pdf.CellFormat(30, rowHeight, formattedBalance, "1", 0, "R", fill, 0, "")
+		pdf.SetTextColor(0, 0, 0) // Reset to black
+
+		// Category
+		category := AccountCategory(acc.Category).String()
+		pdf.SetXY(x+110, y)
+		pdf.CellFormat(35, rowHeight, category, "1", 0, "L", fill, 0, "")
+
+		// Comment (MultiCell)
+		pdf.SetXY(x+145, y)
+		pdf.MultiCell(45, lineHt, acc.Comment, "1", "L", fill)
+
+		// Move to next row position
+		pdf.SetXY(x, y+rowHeight)
+	}
+}
+
+// TotalSummary holds the total balance for assets and liabilities separately.
+type TotalSummary struct {
+	TotalAsset     float64
+	TotalLiability float64
+}
+
+// calculateTotalBalances sums the balances of accounts, grouped by currency.
+func calculateTotalBalances(accounts []Account) map[string]TotalSummary {
+	totals := make(map[string]TotalSummary)
 	for _, acc := range accounts {
 		exp, ok := currencyExponents[strings.ToUpper(acc.Currency)]
 		if !ok {
-			exp = 2 // Default to 2 if currency exponent is unknown
+			exp = 2
 		}
 		divisor := math.Pow(10, float64(exp))
 		majorUnitBalance := acc.Balance / divisor
-		totals[acc.Currency] += majorUnitBalance
+
+		s := totals[acc.Currency]
+		// In ezBookkeeping:
+		// Asset accounts usually have +ve balance.
+		// Liability accounts usually have -ve balance (credit card debt etc).
+		// We want to track them by their absolute magnitude logic or just sum natural values?
+		// The previous logic for net worth was: net = totalAsset + totalLiability.
+		// If Liability is -ve number, this is correct (Asset - Debt).
+		// Let's just sum them naturally into the struct to be safe.
+		if acc.IsAsset {
+			s.TotalAsset += majorUnitBalance
+		} else if acc.IsLiability {
+			s.TotalLiability += majorUnitBalance
+		} else {
+			// Fallback if neither flag is strictly set (though they should be partitioned)
+			if majorUnitBalance >= 0 {
+				s.TotalAsset += majorUnitBalance
+			} else {
+				s.TotalLiability += majorUnitBalance
+			}
+		}
+		totals[acc.Currency] = s
 	}
 	return totals
-}
-
-func getBalanceClass(balance float64) string {
-	if balance >= 0 {
-		return "positive"
-	}
-	return "negative"
-}
-
-// generateHTMLTable is a helper function to create the HTML table structure.
-func generateHTMLTable(accounts []Account) string {
-	if len(accounts) == 0 {
-		return "<p>No accounts found in this category.</p>"
-	}
-
-	var table strings.Builder
-	table.WriteString("<table><thead><tr><th>Name</th><th>Currency</th><th>Balance</th><th>Category</th><th>Comment</th></tr></thead><tbody>")
-
-	for _, acc := range accounts {
-		formattedBalance := convertBalance(acc.Balance, acc.Currency)
-		balanceClass := "positive"
-		if acc.IsLiability {
-			balanceClass = "negative"
-		}
-
-		table.WriteString(fmt.Sprintf("<tr><td>%s</td><td>%s</td><td class=\"%s\">%s</td><td>%s</td><td>%s</td></tr>",
-			acc.Name,
-			acc.Currency,
-			balanceClass,
-			formattedBalance,
-			AccountCategory(acc.Category).String(),
-			acc.Comment,
-		))
-	}
-
-	table.WriteString("</tbody></table>")
-	return table.String()
 }
 
 // convertBalance adjusts the balance from minor units (e.g., cents) to major units (e.g., dollars).

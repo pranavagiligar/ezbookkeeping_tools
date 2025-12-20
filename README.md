@@ -10,7 +10,7 @@ The tool can read configuration from **command-line flags** or from a **.env fil
 
 * **Go environment**: Ensure Go (version 1.16 or higher) is installed.
 * **SMTP Server Access**: If using email, you must have access to a valid SMTP server (Gmail, Outlook, or a dedicated server) and credentials.
-* **Optional .env file**: Stores API credentials, SMTP details
+* **Optional .env file**: Stores API credentials, SMTP details.
 
 Example `.env` file:
 
@@ -21,12 +21,16 @@ LOGIN_NAME=admin
 PASSWORD="My#SecretPassword"
 
 # Email configuration
-EMAIL_TO="recipient@example.com"
+EMAIL_TO="recipient@example.com,spouse@example.com"
+EMAIL_MESSAGE="<p>Here is your <b>monthly</b> report.</p>"
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=myemail@gmail.com
 SMTP_PASS="my#app_password"
 SMTP_FROM=myemail@gmail.com
+
+# PDF configuration
+PDF_PASSWORD="SecretFilePassword"
 ```
 
 > ⚠️ Note: If a value contains `#`, spaces, or `$`, **wrap it in quotes** (single `'` or double `"`).
@@ -56,90 +60,103 @@ By default, the tool attempts to load `.env` if command-line flags are missing. 
 
 ---
 
+## Features
+
+### 1. Account Processing
+-   **Structure**: Recursively discovers subaccounts and displays them as `Subaccount (Parent)`.
+-   **Filtering**: Excludes parent containers and zero-balance accounts.
+
+### 2. PDF Reporting
+-   **Format**: Generates a password-protected PDF attachment.
+-   **Styling**: Modern design with colored headers, zebra-striped rows, and color-coded balances (Green/Red).
+-   **Content**: Full details including Name, Currency, Balance, Category, and wrapping Comments.
+
+### 3. Email Delivery
+-   **Multiple Recipients**: Supports comma-separated email addresses.
+-   **Custom Message**: Allows a custom HTML body message via flag/env.
+
+### 4. Dry Run Mode
+-   **Safe Testing**: Use `--dry-run` to generate the PDF and verify logic without sending any emails.
+
+---
+
 ## Command-Line Flags
 
-| Flag       | Type    | Description                                                                         | Required | Example                                                      |
-| ---------- | ------- | ----------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------ |
-| -url       | string  | Base URL of the API (e.g., [https://api.example.com](https://api.example.com)).     | Yes*     | -url "[https://api.example.com](https://api.example.com)"    |
-| -user      | string  | Login name for API authorization.                                                   | Yes*     | -user "john.doe"                                             |
-| -pass      | string  | Password for API authorization.                                                     | Yes*     | -pass "S3cr3tP@ssw0rd"                                       |
-| -debug     | boolean | Optional. Enable detailed HTTP request/response logging.                            | No       | -debug                                                       |
-| -print     | boolean | Optional. Print CSV data to console in addition to exporting files.                 | No       | -print                                                       |
-| -smtp-host | string  | Optional. SMTP server hostname.                                                     | No       | -smtp-host "smtp.gmail.com"                                  |
-| -smtp-port | int     | Optional. SMTP server port (default 587 for TLS).                                   | No       | -smtp-port 587                                               |
-| -smtp-user | string  | Optional. SMTP username.                                                            | No       | -smtp-user "[myemail@gmail.com](mailto:myemail@gmail.com)"   |
-| -smtp-pass | string  | Optional. SMTP password.                                                            | No       | -smtp-pass "my#app_password"                                 |
-| -email-to  | string  | Recipient email address(es) for the report. Comma-separated for multiple addresses. | No       | -email-to "[report@corp.com](mailto:report@corp.com)"        |
-| -smtp-from | string  | Optional. Email sender address. Defaults to SMTP username if omitted.               | No       | -smtp-from "[sender@example.com](mailto:sender@example.com)" |
-| -config    | string  | Optional. Path to a configuration file (default `.env`).                            | No       | -config "./myconfig.env"                                     |
+| Flag            | Type    | Description                                                                         | Required | Example                                                      |
+| --------------- | ------- | ----------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------ |
+| -url            | string  | Base URL of the API.                                                                | Yes*     | -url "https://api.example.com"                               |
+| -user           | string  | Login name for API authorization.                                                   | Yes*     | -user "john.doe"                                             |
+| -pass           | string  | Password for API authorization.                                                     | Yes*     | -pass "S3cr3tP@ssw0rd"                                       |
+| -debug          | boolean | Enable detailed HTTP request/response logging.                                      | No       | -debug                                                       |
+| -print          | boolean | Print CSV data to console.                                                          | No       | -print                                                       |
+| -dry-run        | boolean | Generate PDF but skip sending email.                                                | No       | -dry-run                                                     |
+| -email-to       | string  | Comma-separated recipient email addresses.                                          | No       | -email-to "me@corp.com,boss@corp.com"                        |
+| -email-message  | string  | Custom HTML message for the email body.                                             | No       | -email-message "<b>Here is the report</b>"                   |
+| -smtp-host      | string  | SMTP server hostname.                                                               | No       | -smtp-host "smtp.gmail.com"                                  |
+| -smtp-port      | int     | SMTP server port (default 587).                                                     | No       | -smtp-port 587                                               |
+| -smtp-user      | string  | SMTP username.                                                                      | No       | -smtp-user "myemail@gmail.com"                               |
+| -smtp-pass      | string  | SMTP password.                                                                      | No       | -smtp-pass "app_password"                                    |
+| -smtp-from      | string  | Email sender address. Defaults to SMTP username.                                    | No       | -smtp-from "sender@example.com"                              |
+| -pdf-password   | string  | Password to encrypt the PDF report.                                                 | No       | -pdf-password "FileSafe123"                                  |
+| -config         | string  | Path to a configuration file (default `.env`).                                      | No       | -config "./myconfig.env"                                     |
 
 > *Required if not provided via `.env`.
 
 ---
 
-## Notes on Email
-
-* If `-smtp-host` is provided, the tool attempts to send the report via email.
-
 ---
 
 ## Examples
 
-### 1. Standard Run and Export (No Email)
+### 1. Dry Run (Safe Test)
 
-Exports CSV files only:
+Generates the PDF report but skips sending email.
 
 ```bash
-go run main.go \
-    -url "https://api.example.com" \
-    -user "myuser" \
-    -pass "mypassword"
+go run main.go --dry-run
 ```
 
-> The tool will also attempt to load missing values from `.env`.
+### 2. Standard Run with Email
 
-### 2. Run, Export, and Email
-
-Fetches the data, saves CSVs, and sends the report via SMTP:
+Fetches data, generates PDF, and sends it to multiple recipients.
 
 ```bash
 go run main.go \
     -url "https://api.example.com" \
-    -user "myemail@gmail.com" \
-    -pass "my_app_password" \
-    -email-to "recipient@corp.com,boss@corp.com" \
+    -user "admin" \
+    -pass "secret" \
+    -email-to "me@example.com,spouse@example.com" \
     -smtp-host "smtp.gmail.com" \
-    -smtp-port 587
+    -smtp-user "me@gmail.com" \
+    -smtp-pass "app_password"
 ```
 
-### 3. Email from a Different Sender
+### 3. Custom Email Message
+
+Sends a report with a custom HTML body.
 
 ```bash
 go run main.go \
-    -url "https://api.example.com" \
-    -user "myuser" \
-    -pass "mypassword" \
-    -email-to "recipient@corp.com" \
-    -smtp-host "smtp.mydomain.com" \
-    -smtp-from "sender@tool.com"
+    --email-to "me@example.com" \
+    --email-message "Here is your <b>monthly</b> financial summary." \
+    [other flags...]
 ```
 
-### 4. With .env located on same as binary or main.go
+### 4. Encrypted PDF Report
 
+Protects the generated PDF with a password.
 
 ```bash
-go run main.go
+go run main.go \
+    --pdf-password "MySecretFiles" \
+    [other flags...]
 ```
 
 ---
 
 ## Output Files
 
-Upon successful execution, two CSV files are created in the current directory:
-
-* `assets.csv`
-* `liabilities.csv`
-
-The **Balance** field is converted from API minor units to major units based on *ISO 4217* currency codes.
-
-**CSV Header:** `ID, Name, Currency, Balance, Category, IsAsset, IsLiability, Comment`
+Upon successful execution, the following files are created:
+1.  `Financial_Report_YYYY-MM-DD.pdf` (The main report)
+2.  `assets.csv`
+3.  `liabilities.csv`

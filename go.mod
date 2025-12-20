@@ -4,6 +4,7 @@ go 1.24.2
 
 require (
 	github.com/go-gomail/gomail v0.0.0-20160411212932-81ebce5c23df
+	github.com/go-pdf/fpdf v0.9.0
 	github.com/joho/godotenv v1.5.1
 )
 
