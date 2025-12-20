@@ -95,21 +95,22 @@ type AuthResponse struct {
 }
 
 type Account struct {
-	ID                      string  `json:"id"`
-	Name                    string  `json:"name"`
-	ParentID                string  `json:"parentId"`
-	Category                int     `json:"category"`
-	Type                    int     `json:"type"`
-	Icon                    string  `json:"icon"`
-	Color                   string  `json:"color"`
-	Currency                string  `json:"currency"`
-	Balance                 float64 `json:"balance"` // This holds the balance in minor units (e.g., cents)
-	Comment                 string  `json:"comment"`
-	DisplayOrder            int     `json:"displayOrder"`
-	IsAsset                 bool    `json:"isAsset"`
-	Hidden                  bool    `json:"hidden"`
-	CreditCardStatementDate int     `json:"creditCardStatementDate"`
-	IsLiability             bool    `json:"isLiability"`
+	ID                      string    `json:"id"`
+	Name                    string    `json:"name"`
+	ParentID                string    `json:"parentId"`
+	Category                int       `json:"category"`
+	Type                    int       `json:"type"`
+	Icon                    string    `json:"icon"`
+	Color                   string    `json:"color"`
+	Currency                string    `json:"currency"`
+	Balance                 float64   `json:"balance"` // This holds the balance in minor units (e.g., cents)
+	Comment                 string    `json:"comment"`
+	DisplayOrder            int       `json:"displayOrder"`
+	IsAsset                 bool      `json:"isAsset"`
+	Hidden                  bool      `json:"hidden"`
+	CreditCardStatementDate int       `json:"creditCardStatementDate"`
+	IsLiability             bool      `json:"isLiability"`
+	SubAccounts             []Account `json:"subAccounts"`
 }
 
 type AccountListResponse struct {
@@ -205,6 +206,9 @@ func main() {
 		log.Fatalf("🚨 Failed to fetch account list: %v", err)
 	}
 
+	// Flatten the accounts list to include subaccounts, hiding parents
+	accounts = flattenAndFormatAccounts(accounts, "")
+
 	// 3. Separate Accounts
 	var assets []Account
 	var liabilities []Account
@@ -259,7 +263,14 @@ func sendReportEmail(htmlBody string) error {
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", sender)
-	m.SetHeader("To", emailRecipient)
+
+	// Support multiple recipients split by comma
+	recipients := strings.Split(emailRecipient, ",")
+	for i := range recipients {
+		recipients[i] = strings.TrimSpace(recipients[i])
+	}
+	m.SetHeader("To", recipients...)
+
 	m.SetHeader("Subject", "Financial Account Balance Report")
 	m.SetBody("text/html", htmlBody)
 
@@ -542,4 +553,30 @@ func dumpResponseHeaders(resp *http.Response, title string) {
 		fmt.Printf("%s: %s\n", key, values)
 	}
 	fmt.Printf("--- END %s Headers ---\n", title)
+}
+
+// flattenAndFormatAccounts takes a list of accounts and returns a flat list of leaf accounts.
+// Parent accounts are excluded. Leaf accounts are renamed to "Name (ParentName)".
+// Accounts with zero balance are excluded.
+func flattenAndFormatAccounts(accounts []Account, parentName string) []Account {
+	var flat []Account
+	for _, acc := range accounts {
+		if len(acc.SubAccounts) > 0 {
+			// It is a parent account. Do not add it to the list.
+			// Recursively process its children, passing this account's name as the parent.
+			flat = append(flat, flattenAndFormatAccounts(acc.SubAccounts, acc.Name)...)
+		} else {
+			// It is a leaf account (no subaccounts).
+			// Skip if balance is zero
+			if acc.Balance == 0 {
+				continue
+			}
+
+			if parentName != "" {
+				acc.Name = fmt.Sprintf("%s (%s)", acc.Name, parentName)
+			}
+			flat = append(flat, acc)
+		}
+	}
+	return flat
 }
