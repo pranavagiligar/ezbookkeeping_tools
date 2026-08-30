@@ -1,4 +1,4 @@
 *.csv
 *.pdf
 .env
-./ezbookkeeping_tools
+ezbookkeeping_tools

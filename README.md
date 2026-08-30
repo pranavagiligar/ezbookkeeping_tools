@@ -15,10 +15,12 @@ The tool can read configuration from **command-line flags** or from a **.env fil
 Example `.env` file:
 
 ```bash
-# API credentials
+# API credentials (either API_TOKEN or LOGIN_NAME/PASSWORD)
 BASE_URL=https://api.example.com
-LOGIN_NAME=admin
-PASSWORD="My#SecretPassword"
+API_TOKEN="your_bearer_token_here"
+# Alternatively:
+# LOGIN_NAME=admin
+# PASSWORD="My#SecretPassword"
 
 # Email configuration
 EMAIL_TO="recipient@example.com,spouse@example.com"
@@ -85,8 +87,9 @@ By default, the tool attempts to load `.env` if command-line flags are missing. 
 | Flag            | Type    | Description                                                                         | Required | Example                                                      |
 | --------------- | ------- | ----------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------ |
 | -url            | string  | Base URL of the API.                                                                | Yes*     | -url "https://api.example.com"                               |
-| -user           | string  | Login name for API authorization.                                                   | Yes*     | -user "john.doe"                                             |
-| -pass           | string  | Password for API authorization.                                                     | Yes*     | -pass "S3cr3tP@ssw0rd"                                       |
+| -token          | string  | Bearer token for API authorization (takes precedence over user/pass).               | Yes*     | -token "eyJhbGciOiJIUzI1NiIsIn..."                           |
+| -user           | string  | Login name for API authorization (if token not provided).                           | Yes*     | -user "john.doe"                                             |
+| -pass           | string  | Password for API authorization (if token not provided).                             | Yes*     | -pass "S3cr3tP@ssw0rd"                                       |
 | -debug          | boolean | Enable detailed HTTP request/response logging.                                      | No       | -debug                                                       |
 | -print          | boolean | Print CSV data to console.                                                          | No       | -print                                                       |
 | -dry-run        | boolean | Generate PDF but skip sending email.                                                | No       | -dry-run                                                     |
@@ -100,7 +103,7 @@ By default, the tool attempts to load `.env` if command-line flags are missing. 
 | -pdf-password   | string  | Password to encrypt the PDF report.                                                 | No       | -pdf-password "FileSafe123"                                  |
 | -config         | string  | Path to a configuration file (default `.env`).                                      | No       | -config "./myconfig.env"                                     |
 
-> *Required if not provided via `.env`.
+> *Either `-token` (or `API_TOKEN`/`TOKEN` in `.env`) OR `-user` and `-pass` (or `LOGIN_NAME` and `PASSWORD` in `.env`) is required along with `-url`.
 
 ---
 
@@ -108,15 +111,16 @@ By default, the tool attempts to load `.env` if command-line flags are missing. 
 
 ## Examples
 
-### 1. Dry Run (Safe Test)
-
-Generates the PDF report but skips sending email.
+### 1. Running with Bearer Token (Safe Dry Run)
 
 ```bash
-go run main.go --dry-run
+go run main.go \
+    -url "https://api.example.com" \
+    -token "eyJhbGciOiJIUzI1NiIsIn..." \
+    --dry-run
 ```
 
-### 2. Standard Run with Email
+### 2. Standard Run with Username and Password with Email
 
 Fetches data, generates PDF, and sends it to multiple recipients.
 

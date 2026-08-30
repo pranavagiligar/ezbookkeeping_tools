@@ -23,6 +23,7 @@ import (
 // --- Global Configuration Variables ---
 var (
 	baseURL   string
+	apiToken  string
 	loginName string
 	password  string
 	debugMode bool
@@ -128,6 +129,7 @@ type AccountListResponse struct {
 func init() {
 	// API Flags
 	flag.StringVar(&baseURL, "url", "", "The base URL of the API (e.g., https://domain_name)")
+	flag.StringVar(&apiToken, "token", "", "The Bearer token for API authorization")
 	flag.StringVar(&loginName, "user", "", "The login name for API authorization")
 	flag.StringVar(&password, "pass", "", "The password for API authorization")
 	flag.BoolVar(&debugMode, "debug", false, "Enable detailed HTTP request/response logging")
@@ -154,7 +156,7 @@ func main() {
 	flag.Parse()
 
 	// Load from config file (.env) if command-line args are missing
-	if baseURL == "" || loginName == "" || password == "" {
+	if baseURL == "" || (apiToken == "" && (loginName == "" || password == "")) {
 		if _, err := os.Stat(configFile); err == nil {
 			fmt.Printf("📄 Loading configuration from %s\n", configFile)
 			err := godotenv.Load(configFile)
@@ -165,6 +167,15 @@ func main() {
 			// Load values from env if not set by flags
 			if baseURL == "" {
 				baseURL = os.Getenv("BASE_URL")
+			}
+			if apiToken == "" {
+				apiToken = os.Getenv("API_TOKEN")
+				if apiToken == "" {
+					apiToken = os.Getenv("TOKEN")
+				}
+				if apiToken == "" {
+					apiToken = os.Getenv("EBKTOOL_TOKEN")
+				}
 			}
 			if loginName == "" {
 				loginName = os.Getenv("LOGIN_NAME")
@@ -201,21 +212,30 @@ func main() {
 		}
 	}
 
+	baseURL = strings.TrimRight(baseURL, "/")
+
 	// Validate essential config
-	if baseURL == "" || loginName == "" || password == "" {
-		fmt.Println("Usage: go run main.go -url <base_url> -user <username> -pass <password> [email flags...]")
+	if baseURL == "" || (apiToken == "" && (loginName == "" || password == "")) {
+		fmt.Println("Usage: go run main.go -url <base_url> [-token <bearer_token> | -user <username> -pass <password>] [email flags...]")
 		flag.PrintDefaults()
-		log.Fatal("🚨 Missing required API flags or .env values: -url, -user, -pass")
+		log.Fatal("🚨 Missing required API flags or .env values: -url and (-token OR -user/-pass)")
 	}
 
-	fmt.Printf("Attempting login to %s as user: %s\n", baseURL, loginName)
+	var authToken string
+	if apiToken != "" {
+		fmt.Printf("🔑 Using Bearer token for API authorization with %s\n", baseURL)
+		authToken = apiToken
+	} else {
+		fmt.Printf("Attempting login to %s as user: %s\n", baseURL, loginName)
 
-	// 1. Get the Bearer Token
-	authToken, err := getAuthToken()
-	if err != nil {
-		log.Fatalf("🚨 Failed to get authentication token: %v", err)
+		// 1. Get the Bearer Token
+		token, err := getAuthToken()
+		if err != nil {
+			log.Fatalf("🚨 Failed to get authentication token: %v", err)
+		}
+		authToken = token
+		fmt.Printf("✅ Successfully retrieved token.\n")
 	}
-	fmt.Printf("✅ Successfully retrieved token.\n")
 
 	// 2. Fetch the Account List
 	accounts, err := fetchAccountList(authToken)
