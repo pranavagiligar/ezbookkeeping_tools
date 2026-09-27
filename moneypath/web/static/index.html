@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MoneyPath - ezBookkeeping Geotag Route Visualizer</title>
+  
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Leaflet Heatmap -->
+  <script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+  <!-- Leaflet MarkerCluster (CSS + JS) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+  <!-- App Stylesheet -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Map Canvas Container -->
+    <div id="map-container">
+      <div id="map"></div>
+
+      <!-- Top Navigation Bar -->
+      <header class="top-nav glass-panel">
+        <div class="brand">
+          <i data-lucide="route" class="brand-icon"></i>
+          <div>
+            <span class="brand-title">MoneyPath</span>
+            <span class="brand-subtitle">ezBookkeeping Geotag Trail</span>
+          </div>
+        </div>
+
+        <div class="nav-actions">
+          <button id="btn-date-filter" class="btn" title="Filter by Date Range">
+            <i data-lucide="calendar"></i>
+            <span id="label-date-range">All Time</span>
+          </button>
+
+          <select id="select-map-style" class="select-compact" title="Change Base Map Style">
+            <option value="osm" selected>OpenStreetMap</option>
+            <option value="carto">Carto Dark</option>
+            <option value="satellite">Satellite Imagery</option>
+          </select>
+
+          <button id="btn-marker-size" class="btn" title="Adjust Marker Sizes">
+            <i data-lucide="disc"></i>
+            <span>Marker Size</span>
+          </button>
+
+          <button id="btn-export-menu" class="btn" title="Export Map Data">
+            <i data-lucide="download"></i>
+            <span>Export</span>
+          </button>
+
+          <button id="btn-refresh" class="btn btn-icon" title="Refresh Live Data">
+            <i data-lucide="refresh-cw"></i>
+          </button>
+        </div>
+      </header>
+
+      <!-- Marker Size Controls Dropdown Panel -->
+      <div id="panel-marker-size" class="marker-size-panel glass-panel" style="display:none;">
+        <div class="marker-panel-header">
+          <span class="marker-panel-title">Marker Size Controls</span>
+          <button id="btn-close-marker-panel" class="btn btn-icon btn-sm" title="Close"><i data-lucide="x"></i></button>
+        </div>
+        
+        <div class="marker-panel-row">
+          <div class="marker-label-group">
+            <span class="marker-preview-dot marker-dot-master"></span>
+            <label for="slider-size-master">All Markers</label>
+          </div>
+          <input type="range" id="slider-size-master" min="4" max="26" value="8" step="1" class="form-range">
+          <span id="val-size-master" class="marker-size-val">8px</span>
+        </div>
+
+        <div class="marker-panel-divider"></div>
+
+        <div class="marker-panel-row">
+          <div class="marker-label-group">
+            <span class="marker-preview-dot marker-dot-expense"></span>
+            <label for="slider-size-expense">Expense</label>
+          </div>
+          <input type="range" id="slider-size-expense" min="4" max="26" value="8" step="1" class="form-range">
+          <span id="val-size-expense" class="marker-size-val">8px</span>
+        </div>
+
+        <div class="marker-panel-row">
+          <div class="marker-label-group">
+            <span class="marker-preview-dot marker-dot-income"></span>
+            <label for="slider-size-income">Income</label>
+          </div>
+          <input type="range" id="slider-size-income" min="4" max="26" value="8" step="1" class="form-range">
+          <span id="val-size-income" class="marker-size-val">8px</span>
+        </div>
+
+        <div class="marker-panel-row">
+          <div class="marker-label-group">
+            <span class="marker-preview-dot marker-dot-transfer"></span>
+            <label for="slider-size-transfer">Transfer</label>
+          </div>
+          <input type="range" id="slider-size-transfer" min="4" max="26" value="8" step="1" class="form-range">
+          <span id="val-size-transfer" class="marker-size-val">8px</span>
+        </div>
+
+        <div class="marker-panel-footer">
+          <button id="btn-reset-marker-sizes" class="btn btn-sm">Reset to Default</button>
+        </div>
+      </div>
+
+      <!-- Live Financial HUD (Top-Left) -->
+      <div class="financial-hud glass-panel">
+        <span class="hud-title">Cumulative Spending</span>
+        <div class="hud-value-group">
+          <span id="hud-currency" style="font-size: 1.1rem; color: var(--text-secondary);">₹</span>
+          <span id="hud-amount" class="hud-counter">0.00</span>
+        </div>
+        <div class="hud-stats-row">
+          <div class="stat-item">
+            <span class="stat-label">Geotagged Points</span>
+            <span id="stat-points-count" class="stat-val">0</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Distance Traveled</span>
+            <span id="stat-distance" class="stat-val">0.0 km</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Node Color Legend -->
+      <div id="map-legend" class="map-legend glass-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+          <span style="font-weight:700; font-size:0.8rem;">Transaction Types</span>
+          <button id="btn-legend-marker-size" class="btn-icon-tiny" title="Configure Marker Sizes">
+            <i data-lucide="sliders" style="width:13px;height:13px;"></i>
+          </button>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span style="width:12px;height:12px;background:#f87171;border-radius:3px;display:inline-block;"></span>
+            <span style="font-size:0.85rem;color:var(--text-secondary);">Expense</span>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span style="width:12px;height:12px;background:#34d399;border-radius:3px;display:inline-block;"></span>
+            <span style="font-size:0.85rem;color:var(--text-secondary);">Income</span>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span style="width:12px;height:12px;background:#fbbf24;border-radius:3px;display:inline-block;"></span>
+            <span style="font-size:0.85rem;color:var(--text-secondary);">Transfer</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Active Point Card (Top-Right) -->
+      <div id="active-point-card" class="active-point-card glass-panel">
+        <div class="point-header">
+          <span id="card-category-badge" class="point-category-badge" style="background-color: #38bdf8;">
+            <i data-lucide="tag" style="width:12px;height:12px;"></i>
+            <span id="card-category-text">Category</span>
+          </span>
+          <span id="card-time" class="point-time">--:--:--</span>
+        </div>
+        <div id="card-amount" class="point-amount">$0.00</div>
+        <div id="card-comment" class="point-comment">No comment</div>
+        <div class="point-meta">
+          <span id="card-account">Account</span>
+          <span id="card-coords">0.000, 0.000</span>
+        </div>
+      </div>
+
+      <!-- Bottom Control Dock (Timeline & Playback) -->
+      <div class="control-dock glass-panel">
+        <!-- Scrubber and Timestamps -->
+        <div class="timeline-row">
+          <span id="time-current-start" class="timeline-time">--</span>
+          <div class="slider-container">
+            <input type="range" id="timeline-slider" class="timeline-slider" min="0" max="1000" value="0" step="1">
+          </div>
+          <span id="time-total-end" class="timeline-time right">--</span>
+        </div>
+
+        <!-- Playback Controls -->
+        <div class="playback-buttons-row">
+          <div class="playback-controls">
+            <button id="btn-step-prev" class="btn btn-icon" title="Step Previous Point">
+              <i data-lucide="skip-back"></i>
+            </button>
+            <button id="btn-play-pause" class="btn btn-primary play-main-btn" title="Play / Pause Animation">
+              <i data-lucide="play" id="icon-play-state"></i>
+            </button>
+            <button id="btn-step-next" class="btn btn-icon" title="Step Next Point">
+              <i data-lucide="skip-forward"></i>
+            </button>
+            <button id="btn-reset" class="btn btn-icon" title="Reset to Start">
+              <i data-lucide="rotate-ccw"></i>
+            </button>
+          </div>
+
+          <!-- Animation Mode & Duration Options -->
+          <div class="mode-controls">
+            <label class="form-label" style="margin-bottom:0; font-size:0.75rem;">Duration:</label>
+            <select id="select-fixed-phase" class="select-compact" title="Fixed Total Animation Time">
+              <option value="10">10 Seconds (Fast)</option>
+              <option value="20">20 Seconds</option>
+              <option value="30" selected>30 Seconds (Default)</option>
+              <option value="60">60 Seconds (Detailed)</option>
+              <option value="120">120 Seconds (Slow)</option>
+              <option value="realtime">Time-Scale Playback</option>
+            </select>
+          </div>
+
+          <!-- Speed Multiplier -->
+          <div class="speed-controls">
+            <label class="form-label" style="margin-bottom:0; font-size:0.75rem;">Speed:</label>
+            <select id="select-speed" class="select-compact" title="Animation Speed Multiplier">
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1.0x</option>
+              <option value="2">2.0x</option>
+              <option value="5">5.0x</option>
+              <option value="10">10x</option>
+              <option value="25">25x</option>
+            </select>
+          </div>
+
+          <!-- Auto Follow Camera & View Controls -->
+          <div style="display:flex; gap:6px;">
+            <button id="btn-toggle-follow" class="btn btn-active" title="Toggle Smooth Camera Following Active Point">
+              <i data-lucide="crosshair"></i>
+              <span>Follow Cam</span>
+            </button>
+            <button id="btn-toggle-cluster" class="btn" title="Toggle marker clustering">
+              <i data-lucide="layout"></i>
+              <span>Cluster</span>
+            </button>
+            <button id="btn-toggle-heat" class="btn" title="Toggle expense heatmap">
+              <i data-lucide="thermometer"></i>
+              <span>Heatmap</span>
+            </button>
+            <div id="heat-controls" class="heat-controls" style="display:none;">
+              <div class="heat-legend">
+                <div class="heat-legend-label">Heat intensity</div>
+                <div class="heat-gradient"></div>
+              </div>
+              <div class="heat-sliders">
+                <label>Radius: <input id="heat-radius-slider" type="range" min="5" max="80" value="25"> <span id="heat-radius-value" class="heat-value">25</span></label>
+                <label>Blur: <input id="heat-blur-slider" type="range" min="5" max="50" value="18"> <span id="heat-blur-value" class="heat-value">18</span></label>
+                <label>Scale: <input id="heat-intensity-slider" type="range" min="0.1" max="3" step="0.1" value="1"> <span id="heat-intensity-value" class="heat-value">1.0</span></label>
+              </div>
+              <div class="heat-range" style="margin-top:8px;">
+                <label style="color:#ddd; font-size:12px;">Show recent:
+                  <select id="heat-range-select" class="form-select">
+                    <option value="0">All Time</option>
+                    <option value="7">Last 7 days</option>
+                    <option value="30">Last 30 days</option>
+                    <option value="90">Last 90 days</option>
+                    <option value="365">Last Year</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <button id="btn-fit-bounds" class="btn btn-icon" title="Fit Entire Route to Screen">
+              <i data-lucide="maximize-2"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Date Range Filter Modal -->
+  <div id="modal-date-filter" class="modal-overlay">
+    <div class="modal-card glass-panel">
+      <div class="modal-header">
+        <h3 class="modal-title">Filter Transactions by Date</h3>
+        <button id="btn-close-date-modal" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      
+      <div class="form-group">
+        <label class="form-label">Quick Presets</label>
+        <div class="presets-grid">
+          <button class="btn date-preset-btn" data-preset="all">All Time</button>
+          <button class="btn date-preset-btn" data-preset="7d">Last 7 Days</button>
+          <button class="btn date-preset-btn" data-preset="30d">Last 30 Days</button>
+          <button class="btn date-preset-btn" data-preset="month">This Month</button>
+          <button class="btn date-preset-btn" data-preset="year">This Year</button>
+          <button class="btn date-preset-btn" data-preset="custom">Custom</button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Start Date</label>
+        <input type="date" id="input-date-start" class="form-input">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">End Date</label>
+        <input type="date" id="input-date-end" class="form-input">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Visible Markers</label>
+        <div class="toggle-row">
+          <label class="toggle-chip"><input type="checkbox" data-type-filter="expense" checked> Expense</label>
+          <label class="toggle-chip"><input type="checkbox" data-type-filter="income" checked> Income</label>
+          <label class="toggle-chip"><input type="checkbox" data-type-filter="transfer" checked> Transfer</label>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Categories</label>
+        <div class="filter-toolbar">
+          <button id="btn-select-all-categories" type="button" class="btn btn-sm">All</button>
+          <button id="btn-clear-categories" type="button" class="btn btn-sm">None</button>
+        </div>
+        <div id="category-filter-list" class="filter-pill-list"></div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Tags</label>
+        <div class="filter-toolbar">
+          <button id="btn-select-all-tags" type="button" class="btn btn-sm">All</button>
+          <button id="btn-clear-tags" type="button" class="btn btn-sm">None</button>
+        </div>
+        <div id="tag-filter-list" class="filter-pill-list"></div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Search in Description</label>
+        <input type="text" id="input-search-description" class="form-input" placeholder="e.g. cafe, rent, grocery">
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Saved Filters</label>
+        <div class="filter-toolbar">
+          <button id="btn-save-current-filter" type="button" class="btn btn-sm">Save Current</button>
+          <button id="btn-clear-saved-filters" type="button" class="btn btn-sm">Clear Saved</button>
+        </div>
+        <div id="saved-filter-list" class="saved-filter-list"></div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; gap:10px; margin-top:10px;">
+        <button id="btn-clear-filters" class="btn">Clear Filters</button>
+        <div style="display:flex; gap:10px;">
+          <button id="btn-cancel-date" class="btn">Cancel</button>
+          <button id="btn-apply-date" class="btn btn-primary">Apply Filter</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Modal -->
+  <div id="modal-export" class="modal-overlay">
+    <div class="modal-card glass-panel">
+      <div class="modal-header">
+        <h3 class="modal-title">Export Geotag Data & Map</h3>
+        <button id="btn-close-export-modal" class="btn btn-icon"><i data-lucide="x"></i></button>
+      </div>
+      <p style="color:var(--text-secondary); font-size:0.85rem; line-height:1.5;">
+        Export your filtered financial trail for offline playback, sharing, or GIS analysis.
+      </p>
+
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <button id="btn-export-standalone-html" class="btn" style="justify-content:flex-start; padding:12px;">
+          <i data-lucide="file-code" style="color:var(--accent-primary);"></i>
+          <div style="text-align:left;">
+            <div style="font-weight:700;">Standalone Interactive HTML Map</div>
+            <div style="font-size:0.75rem; color:var(--text-secondary);">Self-contained single HTML file with embedded coordinates and full playback controls</div>
+          </div>
+        </button>
+
+        <button id="btn-export-geojson" class="btn" style="justify-content:flex-start; padding:12px;">
+          <i data-lucide="map-pin" style="color:var(--accent-green);"></i>
+          <div style="text-align:left;">
+            <div style="font-weight:700;">GeoJSON LineString & Points</div>
+            <div style="font-size:0.75rem; color:var(--text-secondary);">Standard GIS format with timestamps, amounts, and category attributes</div>
+          </div>
+        </button>
+
+        <button id="btn-export-csv" class="btn" style="justify-content:flex-start; padding:12px;">
+          <i data-lucide="table" style="color:var(--accent-orange);"></i>
+          <div style="text-align:left;">
+            <div style="font-weight:700;">CSV Spreadsheet Export</div>
+            <div style="font-size:0.75rem; color:var(--text-secondary);">Comma-separated rows of timestamps, lat, lon, category, amount, and comments</div>
+          </div>
+        </button>
+      </div>
+    </div>
+  </div>
+
+      <!-- Node Detail Modal -->
+      <div id="modal-node-detail" class="modal-overlay">
+        <div class="modal-card glass-panel">
+          <div class="modal-header">
+            <h3 class="modal-title" id="node-modal-title">Transaction Details</h3>
+            <button id="btn-node-close" class="btn btn-icon"><i data-lucide="x"></i></button>
+          </div>
+
+          <div>
+            <div id="node-modal-amount" class="point-amount">--</div>
+            <div id="node-modal-category" class="node-category-tag">Category</div>
+            <div id="node-modal-comment" class="point-comment">No comment</div>
+
+            <div class="node-meta-grid" style="margin-top:8px;">
+              <div id="node-modal-account">Account</div>
+              <div id="node-modal-coords">Lat: 0.00000, Lon: 0.00000</div>
+            </div>
+
+            <div style="display:flex; gap:8px; margin-top:12px;">
+              <button id="btn-node-export-csv" class="btn">Export CSV</button>
+              <button id="btn-node-export-geojson" class="btn">Export GeoJSON</button>
+              <button id="btn-node-edit" class="btn">Edit</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Compact Attribution Footer -->
+  <div id="map-attribution" class="map-attribution">
+    Map tiles © <a href="https://openstreetmap.org" style="color:inherit; text-decoration:underline;">OpenStreetMap</a> contributors
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- Application JS -->
+  <script src="app.js"></script>
+</body>
+</html>
