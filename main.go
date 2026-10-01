@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,6 +109,7 @@ type Account struct {
 	Category                int       `json:"category"`
 	Type                    int       `json:"type"`
 	Icon                    string    `json:"icon"`
+	IconType                int       `json:"iconType"`
 	Color                   string    `json:"color"`
 	Currency                string    `json:"currency"`
 	Balance                 float64   `json:"balance"` // This holds the balance in minor units (e.g., cents)
@@ -116,6 +118,7 @@ type Account struct {
 	IsAsset                 bool      `json:"isAsset"`
 	Hidden                  bool      `json:"hidden"`
 	CreditCardStatementDate int       `json:"creditCardStatementDate"`
+	CreditCardLimit         float64   `json:"creditCardLimit"`
 	IsLiability             bool      `json:"isLiability"`
 	SubAccounts             []Account `json:"subAccounts"`
 }
@@ -123,6 +126,52 @@ type Account struct {
 type AccountListResponse struct {
 	Result  []Account `json:"result"`
 	Success bool      `json:"success"`
+}
+
+// UnmarshalJSON customizes unmarshaling for Account without breaking float64 usages elsewhere.
+func (a *Account) UnmarshalJSON(data []byte) error {
+	// 1. Define an auxiliary struct with raw string/interface fields for string numbers
+	type Alias Account
+	aux := &struct {
+		Balance         json.RawMessage `json:"balance"`
+		CreditCardLimit json.RawMessage `json:"creditCardLimit"`
+		*Alias
+	}{
+		Alias: (*Alias)(a),
+	}
+
+	// 2. Unmarshal all standard fields automatically
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+
+	// 3. Helper function to parse string/number minor units to float64
+	parseAmount := func(raw json.RawMessage) (float64, error) {
+		if len(raw) == 0 || string(raw) == "null" {
+			return 0, nil
+		}
+		// Trim surrounding quotes if incoming value is a JSON string ("1234")
+		s := strings.Trim(string(raw), `"`)
+		if s == "" {
+			return 0, nil
+		}
+		val, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid numeric string %q: %w", s, err)
+		}
+		return val / 100.0, nil
+	}
+
+	// 4. Parse custom fields
+	var err error
+	if a.Balance, err = parseAmount(aux.Balance); err != nil {
+		return fmt.Errorf("failed to parse balance: %w", err)
+	}
+	if a.CreditCardLimit, err = parseAmount(aux.CreditCardLimit); err != nil {
+		return fmt.Errorf("failed to parse creditCardLimit: %w", err)
+	}
+
+	return nil
 }
 
 // --- Initialization and Main Logic ---
