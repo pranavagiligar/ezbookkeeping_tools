@@ -159,7 +159,7 @@ func (a *Account) UnmarshalJSON(data []byte) error {
 		if err != nil {
 			return 0, fmt.Errorf("invalid numeric string %q: %w", s, err)
 		}
-		return val / 100.0, nil
+		return val / 1.0, nil
 	}
 
 	// 4. Parse custom fields
