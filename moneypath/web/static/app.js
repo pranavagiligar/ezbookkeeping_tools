@@ -437,6 +437,7 @@
     btnFitBounds: document.getElementById('btn-fit-bounds'),
     selectMapStyle: document.getElementById('select-map-style'),
     btnRefresh: document.getElementById('btn-refresh'),
+    btnLogout: document.getElementById('btn-logout'),
     btnMarkerSize: document.getElementById('btn-marker-size'),
     panelMarkerSize: document.getElementById('panel-marker-size'),
     btnCloseMarkerPanel: document.getElementById('btn-close-marker-panel'),
@@ -513,13 +514,15 @@
     modalNodeDetail: document.getElementById('modal-node-detail'),
     nodeModalTitle: document.getElementById('node-modal-title'),
     nodeModalAmount: document.getElementById('node-modal-amount'),
+    nodeModalDateTime: document.getElementById('node-modal-datetime'),
+    nodeModalAddress: document.getElementById('node-modal-address'),
     nodeModalCategory: document.getElementById('node-modal-category'),
     nodeModalComment: document.getElementById('node-modal-comment'),
     nodeModalAccount: document.getElementById('node-modal-account'),
     nodeModalCoords: document.getElementById('node-modal-coords'),
     btnNodeExportCsv: document.getElementById('btn-node-export-csv'),
     btnNodeExportGeojson: document.getElementById('btn-node-export-geojson'),
-    btnNodeEdit: document.getElementById('btn-node-edit'),
+    // btnNodeEdit removed (not implemented)
     btnNodeClose: document.getElementById('btn-node-close')
   };
 
@@ -1154,6 +1157,42 @@
       el.nodeModalAccount.textContent = `${p.accountName || ''} (${p.typeName || ''})`;
     }
     el.nodeModalCoords.textContent = `Lat: ${p.latitude.toFixed(5)}, Lon: ${p.longitude.toFixed(5)}`;
+    // Date/time display (best-effort from timestamp fields)
+    const ts = p.timestamp || p.Time || p.time || p.created_at || p.createdAt || 0;
+    if (el.nodeModalDateTime) {
+      if (ts) {
+        try {
+          const d = new Date(Number(ts) * 1000);
+          el.nodeModalDateTime.textContent = d.toLocaleString();
+        } catch (e) {
+          el.nodeModalDateTime.textContent = String(ts);
+        }
+      } else {
+        el.nodeModalDateTime.textContent = 'Date: --';
+      }
+    }
+
+    // Reverse geocode address (cache on point as _address)
+    if (el.nodeModalAddress) {
+      if (p._address) {
+        el.nodeModalAddress.textContent = p._address;
+      } else {
+        el.nodeModalAddress.textContent = 'Looking up address...';
+        const lat = encodeURIComponent(p.latitude);
+        const lon = encodeURIComponent(p.longitude);
+        const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`;
+        fetch(url, { headers: { 'Accept': 'application/json' } })
+          .then(r => r.json())
+          .then(j => {
+            const display = j && (j.display_name || j.error) ? (j.display_name || j.error) : 'Address not found';
+            p._address = display;
+            if (el.nodeModalAddress) el.nodeModalAddress.textContent = display;
+          })
+          .catch(() => {
+            if (el.nodeModalAddress) el.nodeModalAddress.textContent = 'Address lookup failed';
+          });
+      }
+    }
     if (el.modalNodeDetail) el.modalNodeDetail.classList.add('active');
   }
 
@@ -1567,6 +1606,13 @@
     // Refresh
     el.btnRefresh.addEventListener('click', () => loadTransactions());
 
+    // Logout
+    if (el.btnLogout) {
+      el.btnLogout.addEventListener('click', () => {
+        window.location.href = '/logout';
+      });
+    }
+
     // Date Filter Modal
     el.btnDateFilter.addEventListener('click', () => el.modalDateFilter.classList.add('active'));
     el.btnCloseDateModal.addEventListener('click', () => el.modalDateFilter.classList.remove('active'));
@@ -1799,9 +1845,7 @@
       if (state.maxTime) url.searchParams.set('max_time', state.maxTime);
       window.location.href = url.toString();
     });
-    if (el.btnNodeEdit) el.btnNodeEdit.addEventListener('click', () => {
-      showToast('Edit action not implemented in this build.', 'info');
-    });
+    // Edit button removed; no-op
 
     // Keyboard Shortcuts (Space for Play/Pause, Left/Right for Step)
     window.addEventListener('keydown', (e) => {

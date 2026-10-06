@@ -59,6 +59,11 @@
           <button id="btn-refresh" class="btn btn-icon" title="Refresh Live Data">
             <i data-lucide="refresh-cw"></i>
           </button>
+
+          <button id="btn-logout" class="btn btn-icon" title="Log out">
+            <i data-lucide="log-out"></i>
+            <span>Log out</span>
+          </button>
         </div>
       </header>
 
@@ -409,10 +414,12 @@
               <div id="node-modal-coords">Lat: 0.00000, Lon: 0.00000</div>
             </div>
 
+            <div id="node-modal-datetime" class="point-datetime" style="margin-top:8px; color:var(--text-secondary);">Date: --</div>
+            <div id="node-modal-address" class="point-address" style="margin-top:6px; color:var(--text-secondary);">Address: (not looked up)</div>
+
             <div style="display:flex; gap:8px; margin-top:12px;">
               <button id="btn-node-export-csv" class="btn">Export CSV</button>
               <button id="btn-node-export-geojson" class="btn">Export GeoJSON</button>
-              <button id="btn-node-edit" class="btn">Edit</button>
             </div>
           </div>
         </div>
