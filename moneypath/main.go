@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-gomail/gomail"
 	_ "modernc.org/sqlite"
 
 	"github.com/joho/godotenv"
@@ -22,16 +25,24 @@ import (
 )
 
 var (
-	port        int
-	baseURL     string
-	apiToken    string
-	loginName   string
-	password    string
-	configFile  string
-	defaultSecs int
-	ezClient    *client.EzClient
-	mbtilesDB   *sql.DB
-	mbtilesPath string
+	port                  int
+	baseURL               string
+	apiToken              string
+	loginName             string
+	password              string
+	configFile            string
+	defaultSecs           int
+	ezClient              *client.EzClient
+	mbtilesDB             *sql.DB
+	stateDB               *sql.DB
+	mbtilesPath           string
+	passkeyValue          = "money-path-passkey"
+	authSessionCookieName = "moneypath_session"
+	authSessions          = map[string]string{}
+	pendingResetTokens    = map[string]struct {
+		Email     string
+		ExpiresAt time.Time
+	}{}
 )
 
 func init() {
@@ -93,6 +104,12 @@ func loadEnvironment() {
 			port = pVal
 		}
 	}
+	if envPasskey := strings.TrimSpace(os.Getenv("PASSKEY")); envPasskey != "" {
+		passkeyValue = envPasskey
+	}
+	if envPasskey := strings.TrimSpace(os.Getenv("APP_PASSKEY")); envPasskey != "" {
+		passkeyValue = envPasskey
+	}
 	// MBTiles path for offline tiles (optional)
 	if mb := os.Getenv("MBTILES_PATH"); mb != "" {
 		mbtilesPath = mb
@@ -104,9 +121,591 @@ func loadEnvironment() {
 	}
 }
 
+func normalizeLoginEmail(raw string) string {
+	email := strings.TrimSpace(strings.ToLower(raw))
+	if email == "" {
+		return ""
+	}
+	if idx := strings.Index(email, "@"); idx > 0 {
+		localPart := email[:idx]
+		domain := email[idx+1:]
+		localPart = strings.TrimSpace(localPart)
+		domain = strings.TrimSpace(domain)
+		if localPart == "" || domain == "" {
+			return ""
+		}
+		return localPart + "@" + domain
+	}
+	return email
+}
+
+func parseEmailList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r'
+	})
+	seen := map[string]bool{}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		email := normalizeLoginEmail(part)
+		if email == "" {
+			continue
+		}
+		if !seen[email] {
+			seen[email] = true
+			out = append(out, email)
+		}
+	}
+	return out
+}
+
+func resolveResetTargetEmail(inputEmail, fallback string) string {
+	for _, raw := range []string{inputEmail, fallback} {
+		for _, email := range parseEmailList(raw) {
+			return email
+		}
+	}
+	return ""
+}
+
+func validatePasskeyInput(email, passkey string) bool {
+	email = normalizeLoginEmail(email)
+	if email == "" || passkey == "" {
+		return false
+	}
+	if strings.TrimSpace(passkey) == "" {
+		return false
+	}
+	return strings.TrimSpace(passkey) == passkeyValue
+}
+
+func generateSecureToken() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+func resolveStateDBPath() string {
+	if dbPath := strings.TrimSpace(os.Getenv("MONEYPATH_DB_PATH")); dbPath != "" {
+		return dbPath
+	}
+	return filepath.Join(".", "moneypath_state.db")
+}
+
+func initStateDB(dbPath string) error {
+	if dbPath == "" {
+		dbPath = resolveStateDBPath()
+	}
+	if stateDB != nil {
+		_ = stateDB.Close()
+		stateDB = nil
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS app_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		_ = db.Close()
+		return err
+	}
+	stateDB = db
+	return nil
+}
+
+func saveStateString(key, value string) error {
+	if stateDB == nil || strings.TrimSpace(key) == "" {
+		return nil
+	}
+	_, err := stateDB.Exec(`INSERT INTO app_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+func loadStateString(key string) string {
+	if stateDB == nil || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	var value string
+	err := stateDB.QueryRow(`SELECT value FROM app_state WHERE key = ?`, key).Scan(&value)
+	if err != nil {
+		return ""
+	}
+	return value
+}
+
+func isAuthenticatedRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	cookie, err := r.Cookie(authSessionCookieName)
+	if err != nil {
+		return false
+	}
+	_, ok := authSessions[cookie.Value]
+	return ok
+}
+
+func sendResetEmail(recipient, token string) error {
+	smtpHost := strings.TrimSpace(os.Getenv("SMTP_HOST"))
+	smtpUser := strings.TrimSpace(os.Getenv("SMTP_USER"))
+	smtpPass := strings.TrimSpace(os.Getenv("SMTP_PASS"))
+	sender := strings.TrimSpace(os.Getenv("SMTP_FROM"))
+	if sender == "" {
+		sender = smtpUser
+	}
+	if smtpHost == "" || smtpUser == "" || smtpPass == "" || recipient == "" {
+		return fmt.Errorf("SMTP configuration is incomplete")
+	}
+	portValue := 587
+	if p, err := strconv.Atoi(strings.TrimSpace(os.Getenv("SMTP_PORT"))); err == nil && p > 0 {
+		portValue = p
+	}
+	resetURL := fmt.Sprintf("http://localhost:%d/reset?token=%s", port, token)
+	m := gomail.NewMessage()
+	m.SetHeader("From", sender)
+	m.SetHeader("To", recipient)
+	m.SetHeader("Subject", "MoneyPath Passkey Reset Request")
+	m.SetBody("text/html", fmt.Sprintf(`
+		<html>
+		<body style="font-family:Arial,sans-serif; line-height:1.5; color:#1f2937;">
+			<p>Hello,</p>
+			<p>A reset request was received for your MoneyPath access.</p>
+			<p><a href="%s" style="display:inline-block;padding:10px 18px;border-radius:8px;background:#2563eb;color:#fff;text-decoration:none;">Reset Passkey</a></p>
+			<p>If you did not request this, you can safely ignore this email.</p>
+			<p>Reset link: <a href="%s">%s</a></p>
+		</body>
+		</html>
+	`, resetURL, resetURL, resetURL))
+	d := gomail.NewDialer(smtpHost, portValue, smtpUser, smtpPass)
+	return d.DialAndSend(m)
+}
+
+func requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" || r.URL.Path == "/logout" || strings.HasPrefix(r.URL.Path, "/api/auth/") || strings.HasPrefix(r.URL.Path, "/reset") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !isAuthenticatedRequest(r) {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func renderLoginPage() string {
+	isPasskeyConfigured := adminWebUser != nil && len(adminWebUser.Credentials) > 0
+	buttonClass := "secondary"
+	hiddenAttr := ""
+	if isPasskeyConfigured {
+		buttonClass = "secondary hidden"
+		hiddenAttr = "hidden"
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MoneyPath Login</title>
+  <style>
+    body { margin:0; font-family:Arial,sans-serif; background:linear-gradient(135deg,#0f172a,#111827 45%%,#1e293b); color:#e2e8f0; min-height:100vh; display:flex; align-items:center; justify-content:center; }
+    .card { width:min(460px, 92vw); background:rgba(15,23,42,0.85); border:1px solid rgba(148,163,184,0.25); border-radius:18px; box-shadow:0 24px 80px rgba(0,0,0,0.45); padding:28px; }
+    h1 { margin:0 0 8px; font-size:2rem; }
+    p { color:#cbd5e1; margin-top:0; }
+    .actions { display:grid; gap:12px; margin-top:18px; }
+    button { width:100%%; padding:12px 16px; border:none; border-radius:10px; font-weight:700; font-size:1rem; cursor:pointer; }
+    .primary { background:linear-gradient(135deg,#3b82f6,#8b5cf6); color:white; }
+    .secondary { background:transparent; border:1px solid rgba(148,163,184,0.5); color:#e2e8f0; }
+    .muted { font-size:0.82rem; color:#94a3b8; margin-top:12px; }
+    #message { margin-top:16px; min-height:24px; font-size:0.95rem; color:#fca5a5; }
+    .hidden { display:none !important; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>MoneyPath</h1>
+    <p>Single-user WebAuthn access for the administrator.</p>
+    <div class="actions">
+      <button class="primary" id="login-passkey" type="button">Sign in with passkey</button>
+      <button class="%s" id="register-passkey" type="button" %s>Register this browser as a passkey</button>
+      <button class="secondary" id="reset-button" type="button">Request admin reset email</button>
+    </div>
+    <div id="message"></div>
+    <p class="muted">This app is intended for one owner. The passkey is the secure login, and password reset remains email-only to the configured admin address.</p>
+  </div>
+  <script>
+    const messageBox = document.getElementById('message');
+    const webAuthnSupported = !!(window.PublicKeyCredential && window.isSecureContext);
+    const registerButton = document.getElementById('register-passkey');
+    const isPasskeyConfigured = %t;
+
+    function setMessage(text, isError) {
+      messageBox.textContent = text;
+      messageBox.style.color = isError ? '#fca5a5' : '#86efac';
+    }
+
+    function updateRegistrationState() {
+      if (isPasskeyConfigured || registerButton === null) {
+        if (registerButton) registerButton.classList.add('hidden');
+        return;
+      }
+      registerButton.classList.remove('hidden');
+    }
+
+    function decodeBase64URL(value) {
+      const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
+      const padding = normalized.length %% 4 === 0 ? '' : '='.repeat(4 - (normalized.length %% 4));
+      const binary = atob(normalized + padding);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes;
+    }
+
+    function encodeBase64URL(bytes) {
+      let binary = '';
+      bytes.forEach((byte) => binary += String.fromCharCode(byte));
+      return btoa(binary)
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+    }
+
+    function parsePublicKeyOptions(options) {
+      const publicKey = options && options.publicKey ? JSON.parse(JSON.stringify(options.publicKey)) : JSON.parse(JSON.stringify(options));
+      if (publicKey.challenge) publicKey.challenge = decodeBase64URL(publicKey.challenge);
+      if (publicKey.user && publicKey.user.id) publicKey.user.id = decodeBase64URL(publicKey.user.id);
+      if (Array.isArray(publicKey.allowCredentials)) {
+        publicKey.allowCredentials = publicKey.allowCredentials.map((entry) => ({
+          ...entry,
+          id: decodeBase64URL(entry.id)
+        }));
+      }
+      if (Array.isArray(publicKey.excludeCredentials)) {
+        publicKey.excludeCredentials = publicKey.excludeCredentials.map((entry) => ({
+          ...entry,
+          id: decodeBase64URL(entry.id)
+        }));
+      }
+      return publicKey;
+    }
+
+    async function webAuthnRequest(url, payload) {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload || {})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'WebAuthn request failed');
+      return data;
+    }
+
+    async function registerPasskey() {
+      if (!webAuthnSupported) {
+        setMessage('WebAuthn is not available in this browser context. Use HTTPS or localhost.', true);
+        return;
+      }
+      try {
+        setMessage('Creating passkey...', false);
+        const options = await webAuthnRequest('/api/auth/webauthn/register/begin');
+        const publicKey = parsePublicKeyOptions(options);
+        const credential = await navigator.credentials.create({ publicKey });
+        const response = credential.response;
+        const payload = {
+          id: credential.id,
+          rawId: encodeBase64URL(new Uint8Array(credential.rawId)),
+          type: credential.type,
+          response: {
+            clientDataJSON: encodeBase64URL(new Uint8Array(response.clientDataJSON)),
+            attestationObject: encodeBase64URL(new Uint8Array(response.attestationObject))
+          }
+        };
+        await webAuthnRequest('/api/auth/webauthn/register/finish', payload);
+        setMessage('Passkey registered successfully. You can now sign in with it.', false);
+        if (registerButton) {
+          registerButton.classList.add('hidden');
+          registerButton.setAttribute('hidden', 'hidden');
+        }
+      } catch (error) {
+        setMessage(error.message || 'Passkey registration failed.', true);
+      }
+    }
+
+    async function loginWithPasskey() {
+      if (!webAuthnSupported) {
+        setMessage('WebAuthn is not available in this browser context. Use HTTPS or localhost.', true);
+        return;
+      }
+      try {
+        setMessage('Requesting passkey challenge...', false);
+        const options = await webAuthnRequest('/api/auth/webauthn/authenticate/begin');
+        const publicKey = parsePublicKeyOptions(options);
+        const credential = await navigator.credentials.get({ publicKey });
+        const response = credential.response;
+        const payload = {
+          id: credential.id,
+          rawId: encodeBase64URL(new Uint8Array(credential.rawId)),
+          type: credential.type,
+          response: {
+            clientDataJSON: encodeBase64URL(new Uint8Array(response.clientDataJSON)),
+            authenticatorData: encodeBase64URL(new Uint8Array(response.authenticatorData)),
+            signature: encodeBase64URL(new Uint8Array(response.signature)),
+            userHandle: response.userHandle ? encodeBase64URL(new Uint8Array(response.userHandle)) : null
+          }
+        };
+        await webAuthnRequest('/api/auth/webauthn/authenticate/finish', payload);
+        window.location.href = '/';
+      } catch (error) {
+        setMessage(error.message || 'Passkey login failed.', true);
+      }
+    }
+
+    document.getElementById('login-passkey').addEventListener('click', loginWithPasskey);
+    document.getElementById('register-passkey').addEventListener('click', registerPasskey);
+    document.getElementById('reset-button').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/api/auth/request-reset', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Reset request failed');
+        setMessage('A reset email has been sent to the configured admin address (if configured).', false);
+      } catch (error) {
+        setMessage(error.message || 'Reset request failed.', true);
+      }
+    });
+
+    updateRegistrationState();
+  </script>
+</body>
+</html>`, buttonClass, hiddenAttr, isPasskeyConfigured)
+}
+
+func renderResetPage() string {
+	return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MoneyPath Reset Passkey</title>
+  <style>
+    body { margin:0; font-family:Arial,sans-serif; background:linear-gradient(135deg,#0f172a,#111827 45%,#1e293b); color:#e2e8f0; min-height:100vh; display:flex; align-items:center; justify-content:center; }
+    .card { width:min(420px, 90vw); background:rgba(15,23,42,0.85); border:1px solid rgba(148,163,184,0.25); border-radius:18px; padding:24px; }
+    label { display:block; margin-top:14px; color:#94a3b8; font-size:0.75rem; letter-spacing:0.04em; text-transform:uppercase; }
+    input { width:100%; box-sizing:border-box; padding:12px 14px; margin-top:8px; border-radius:10px; border:1px solid #475569; background:#0b1220; color:#f8fafc; }
+    button { margin-top:20px; width:100%; padding:12px 16px; border:none; border-radius:10px; background:linear-gradient(135deg,#10b981,#34d399); color:white; font-weight:700; cursor:pointer; }
+    #message { margin-top:16px; min-height:20px; color:#fca5a5; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1 style="margin-top:0;">Set a new passkey</h1>
+    <form id="reset-form">
+      <input type="hidden" id="token" name="token">
+      <label for="new-passkey">New Passkey</label>
+      <input id="new-passkey" type="password" required>
+      <button type="submit">Save new passkey</button>
+    </form>
+    <div id="message"></div>
+  </div>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('token');
+    document.getElementById('token').value = token || '';
+    document.getElementById('reset-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const passkey = document.getElementById('new-passkey').value.trim();
+      const formToken = document.getElementById('token').value.trim();
+      if (!formToken || !passkey) {
+        document.getElementById('message').textContent = 'A valid reset token and new passkey are required.';
+        return;
+      }
+      try {
+        const response = await fetch('/api/auth/reset', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ token: formToken, newPasskey: passkey })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Reset failed');
+        document.getElementById('message').style.color = '#86efac';
+        document.getElementById('message').textContent = 'Passkey updated successfully. Redirecting to login...';
+        setTimeout(() => window.location.href = '/login', 1500);
+      } catch (error) {
+        document.getElementById('message').textContent = error.message || 'Reset failed.';
+      }
+    });
+  </script>
+</body>
+</html>`
+}
+
+func handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	if isAuthenticatedRequest(r) {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(renderLoginPage()))
+}
+
+func handleResetPage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Query().Get("token") == "" {
+		http.Error(w, "missing reset token", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(renderResetPage()))
+}
+
+func handleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: authSessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
+	for token := range authSessions {
+		delete(authSessions, token)
+	}
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
+}
+
+func handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Email   string `json:"email"`
+		Passkey string `json:"passkey"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !validatePasskeyInput(req.Email, req.Passkey) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid email or passkey"})
+		return
+	}
+	email := normalizeLoginEmail(req.Email)
+	token := generateSecureToken()
+	authSessions[token] = email
+	http.SetCookie(w, &http.Cookie{
+		Name:     authSessionCookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   int((8 * time.Hour).Seconds()),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "email": email})
+}
+
+func handleRequestReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	// Security: always send reset notifications only to the configured admin email(s).
+	// When EMAIL_TO is a CSV list, use the first valid recipient to keep the reset
+	// flow deterministic and predictable.
+	adminEmails := parseEmailList(os.Getenv("EMAIL_TO"))
+	if len(adminEmails) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "reset functionality is not configured on this server"})
+		return
+	}
+	target := adminEmails[0]
+	token := generateSecureToken()
+	pendingResetTokens[token] = struct {
+		Email     string
+		ExpiresAt time.Time
+	}{
+		Email:     target,
+		ExpiresAt: time.Now().Add(30 * time.Minute),
+	}
+	if err := sendResetEmail(target, token); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to send reset email: " + err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "recipient": target})
+}
+
+func handleResetPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		Token      string `json:"token"`
+		NewPasskey string `json:"newPasskey"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	record, ok := pendingResetTokens[req.Token]
+	if !ok || time.Now().After(record.ExpiresAt) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "reset token is invalid or expired"})
+		return
+	}
+	newPasskey := strings.TrimSpace(req.NewPasskey)
+	if newPasskey == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "new passkey is required"})
+		return
+	}
+	passkeyValue = newPasskey
+	if err := saveStateString("passkey_value", passkeyValue); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "failed to persist new passkey"})
+		return
+	}
+	delete(pendingResetTokens, req.Token)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "email": record.Email})
+}
+
 func main() {
 	flag.Parse()
 	loadEnvironment()
+	if err := initStateDB(""); err != nil {
+		log.Fatalf("Failed to initialize MoneyPath state database: %v", err)
+	}
+	defer stateDB.Close()
+	if storedPasskey := loadStateString("passkey_value"); storedPasskey != "" {
+		passkeyValue = storedPasskey
+	}
+
+	// Initialize WebAuthn subsystem
+	if err := initWebAuthn(); err != nil {
+		log.Printf("⚠️ WebAuthn initialization failed: %v (passkey endpoints will not work)", err)
+	}
 
 	ezClient = client.NewEzClient(baseURL, apiToken, loginName, password)
 
@@ -126,25 +725,38 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	// Public auth endpoints
+	mux.HandleFunc("/login", handleLoginPage)
+	mux.HandleFunc("/logout", handleLogout)
+	mux.HandleFunc("/reset", handleResetPage)
+	mux.HandleFunc("/api/auth/login", handleAuthLogin)
+	mux.HandleFunc("/api/auth/request-reset", handleRequestReset)
+	mux.HandleFunc("/api/auth/reset", handleResetPassword)
+	// WebAuthn endpoints (passkey)
+	mux.HandleFunc("/api/auth/webauthn/register/begin", handleWebAuthnRegisterBegin)
+	mux.HandleFunc("/api/auth/webauthn/register/finish", handleWebAuthnRegisterFinish)
+	mux.HandleFunc("/api/auth/webauthn/authenticate/begin", handleWebAuthnAuthBegin)
+	mux.HandleFunc("/api/auth/webauthn/authenticate/finish", handleWebAuthnAuthFinish)
+
 	// API Endpoints
-	mux.HandleFunc("/api/transactions", handleTransactions)
-	mux.HandleFunc("/api/mock", handleMock)
-	mux.HandleFunc("/export/transaction/csv", handleExportTransactionCSV)
-	mux.HandleFunc("/export/transaction/geojson", handleExportTransactionGeoJSON)
+	mux.Handle("/api/transactions", requireAuth(http.HandlerFunc(handleTransactions)))
+	mux.Handle("/api/mock", requireAuth(http.HandlerFunc(handleMock)))
+	mux.Handle("/export/transaction/csv", requireAuth(http.HandlerFunc(handleExportTransactionCSV)))
+	mux.Handle("/export/transaction/geojson", requireAuth(http.HandlerFunc(handleExportTransactionGeoJSON)))
 	mux.HandleFunc("/api/health", handleHealth)
 
 	// Expose lightweight config endpoint for frontend (e.g. CARTO API key)
-	mux.HandleFunc("/config", handleConfig)
+	mux.Handle("/config", requireAuth(http.HandlerFunc(handleConfig)))
 
 	// Embedded Static Assets
 	fileSystem, err := web.GetFileSystem()
 	if err != nil {
 		log.Fatalf("Failed to initialize embedded web filesystem: %v", err)
 	}
-	mux.Handle("/", http.FileServer(fileSystem))
+	mux.Handle("/", requireAuth(http.FileServer(fileSystem)))
 
 	// Local tile server (serve files from ./tiles/{z}/{x}/{y}.png)
-	mux.HandleFunc("/tiles/", handleLocalTiles)
+	mux.Handle("/tiles/", requireAuth(http.HandlerFunc(handleLocalTiles)))
 
 	addr := fmt.Sprintf(":%d", port)
 	banner := `
